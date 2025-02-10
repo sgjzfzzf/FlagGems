@@ -1,4 +1,5 @@
 import inspect
+import os
 import sqlite3
 import threading
 import weakref
@@ -12,6 +13,8 @@ from .code_cache import config_cache_dir
 
 DEVICE_COUNT = runtime.device.device_count
 major_version = eval(triton.__version__.split(".")[0])
+
+ENABLE_MABTUNER = os.getenv("ENABLE_MABTUNER") == "1"
 
 
 class LibTuner(triton.runtime.Autotuner):
@@ -133,23 +136,38 @@ def libtuner(
     Decorator for triton library autotuner.
     """
 
-    def decorator(fn):
-        return LibTuner(
-            fn,
-            fn.arg_names,
+    if ENABLE_MABTUNER:
+        return triton.autotune(
             configs,
             key,
+            prune_configs_by,
             reset_to_zero,
             restore_value,
             pre_hook=pre_hook,
             post_hook=post_hook,
-            prune_configs_by=prune_configs_by,
             warmup=warmup,
             rep=rep,
             use_cuda_graph=use_cuda_graph,
         )
+    else:
 
-    return decorator
+        def decorator(fn):
+            return LibTuner(
+                fn,
+                fn.arg_names,
+                configs,
+                key,
+                reset_to_zero,
+                restore_value,
+                pre_hook=pre_hook,
+                post_hook=post_hook,
+                prune_configs_by=prune_configs_by,
+                warmup=warmup,
+                rep=rep,
+                use_cuda_graph=use_cuda_graph,
+            )
+
+        return decorator
 
 
 class LibEntry(triton.KernelInterface):
@@ -297,6 +315,9 @@ def libentry():
     """
 
     def decorator(fn):
-        return LibEntry(fn)
+        if ENABLE_MABTUNER:
+            return fn
+        else:
+            return LibEntry(fn)
 
     return decorator
