@@ -3,6 +3,7 @@ import inspect
 import logging
 import math
 import os
+import random
 import sqlite3
 import threading
 import time
@@ -13,6 +14,9 @@ from itertools import starmap
 from typing import Any, Callable, Dict, Iterator, Optional, Tuple, Type, Union
 
 import triton
+from skopt import gp_minimize
+from skopt.space import Categorical
+from skopt.utils import use_named_args
 
 from flag_gems import runtime
 from flag_gems.runtime import torch_device_fn
@@ -366,7 +370,6 @@ class OfflineLibTuner(LibTuner):
             _args = {k: v for k, v in all_args.items() if k in self.arg_names}
             key = self.get_key(_args)
             if key not in self.cache:
-                # prune configs
                 used_cached_result = False
                 pruned_configs = self.prune_configs(kwargs)
                 bench_start = time.time()
@@ -459,6 +462,102 @@ def default_policy(
         config: bench_fn(config) for config in configs
     }
     best_config: triton.Config = min(timings, key=timings.get)
+    return best_config, timings
+
+
+@OfflineLibTuner.register_policy("early_stop")
+def early_stop_search_strategy(
+    bench_fn: triton.runtime.KernelInterface,
+    configs: Iterator[triton.Config],
+    args: Tuple[Any],
+    kwargs: Dict[str, Any],
+):
+    timings = {}
+    best_config = None
+    best_timing = float("inf")
+    second_best_timing = float("inf")
+    # Stop if the relative difference between the best and second-best is less than x%
+    # Only start checking after this many configs
+    threshold = 0.03
+    min_search_before_stop = 5
+    search_count = 0
+
+    for config in configs:
+        search_count += 1
+        timing = bench_fn(config)[0]
+        timings[config] = timing
+
+        if timing < best_timing:
+            second_best_timing = best_timing
+            best_timing = timing
+            best_config = config
+        elif timing < second_best_timing:
+            second_best_timing = timing
+
+        # Check for early stopping condition
+        if (
+            search_count >= min_search_before_stop
+            and (second_best_timing - best_timing) / best_timing < threshold
+        ):
+            break
+    return best_config, timings
+
+
+@OfflineLibTuner.register_policy("bayesian")
+def bayesian_policy(bench_fn, configs, args, kwargs):
+    timings = {}
+
+    # Define search space
+    search_space = []
+    if not configs:
+        return None, {}
+
+    param_names = list(configs[0].kwargs.keys())
+    for name in param_names:
+        values = sorted(list(set(c.kwargs[name] for c in configs)))
+        search_space.append(Categorical(values, name=name))
+
+    # Define objective function
+    @use_named_args(search_space)
+    def objective(**params):
+        for config in configs:
+            if config.kwargs == params:
+                if config not in timings:
+                    timing = bench_fn(config)
+                    if isinstance(timing, list):
+                        timing = timing[0]
+                    if math.isinf(timing):
+                        timing = 1e9
+                    timings[config] = timing
+                return timings[config]
+        return 1e9
+
+    # Run Bayesian optimization
+    # n_initial_points is the number of random points to sample before fitting the model
+    # n_calls is the total number of evaluations
+    space_size = len(configs)
+    n_initial_points = min(max(3, int(space_size**0.5)), 10)
+    n_calls = min(max(5, int(space_size * 0.5)), 25)
+
+    # Ensure n_calls is not smaller than n_initial_points
+    n_calls = max(n_calls, n_initial_points)
+
+    result = gp_minimize(
+        objective,
+        search_space,
+        n_calls=n_calls,
+        n_initial_points=n_initial_points,
+        random_state=0,
+    )
+
+    # Find the best config
+    best_params = {param.name: value for param, value in zip(search_space, result.x)}
+    best_config = None
+    for config in configs:
+        if config.kwargs == best_params:
+            best_config = config
+            break
+
     return best_config, timings
 
 
