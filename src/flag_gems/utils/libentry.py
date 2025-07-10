@@ -514,7 +514,7 @@ def bayesian_policy(bench_fn, configs, args, kwargs):
 
     param_names = list(configs[0].kwargs.keys())
     for name in param_names:
-        values = sorted(list(set(c.kwargs[name] for c in configs)))
+        values = sorted(set(c.kwargs[name] for c in configs))
         search_space.append(Categorical(values, name=name))
 
     # Define objective function
