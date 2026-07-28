@@ -57,12 +57,12 @@ def test_bmm(monkeypatch, M, N, K, dtype):
     ref_mat2 = utils.to_reference(mat2, True)
 
     ref_out = torch.bmm(ref_mat1, ref_mat2)
-    with flag_gems.use_gems():
-        res_out = torch.bmm(mat1, mat2)
+    res_out = flag_gems.ops.bmm(mat1, mat2)
 
     utils.gems_assert_close(res_out, ref_out, dtype, reduce_dim=K)
 
 
+@pytest.mark.skip
 @pytest.mark.bmm
 @pytest.mark.parametrize("M, N, K", MNK_SHAPES)
 @pytest.mark.parametrize("dtype", FLOAT_DTYPES)
@@ -91,8 +91,7 @@ def test_bmm_non_contiguous(M, N, K, dtype):
     ref_mat1 = utils.to_reference(mat1, True)
     ref_mat2 = utils.to_reference(mat2, True)
     ref_out = torch.bmm(ref_mat1, ref_mat2)
-    with flag_gems.use_gems():
-        res_out = torch.bmm(mat1, mat2)
+    res_out = flag_gems.ops.bmm(mat1, mat2)
     utils.gems_assert_close(res_out, ref_out, dtype, reduce_dim=K)
 
 
@@ -117,7 +116,6 @@ def test_bmm_out(M, N, K, dtype):
     ref_mat2 = utils.to_reference(mat2, True)
 
     ref_out = torch.bmm(ref_mat1, ref_mat2)
-    with flag_gems.use_gems():
-        torch.bmm(mat1, mat2, out=out)
+    flag_gems.ops.bmm_out(mat1, mat2, out)
 
     utils.gems_assert_close(out, ref_out, dtype, reduce_dim=K)

@@ -15,18 +15,18 @@
 import logging
 
 import torch
+import trident
 import triton
 import triton.language as tl
 
 from flag_gems import runtime
 from flag_gems.runtime import torch_device_fn
-from flag_gems.utils import libentry, libtuner
+from flag_gems.utils import libtuner
 from flag_gems.utils import triton_lang_extension as ext
 
 logger = logging.getLogger(__name__)
 
 
-@libentry()
 @libtuner(
     configs=runtime.get_tuned_config("bmm"),
     key=["M", "N", "K", "stride_am", "stride_bk"],
@@ -154,6 +154,7 @@ def bmm_kernel(
     tl.store(o_ptrs, o, mask_c)
 
 
+@trident.jit
 def bmm(A, B):
     logger.debug("GEMS BMM")
     assert A.shape[0] == B.shape[0], "Batch dim mismatch"
@@ -189,6 +190,7 @@ def bmm(A, B):
     return out
 
 
+@trident.jit
 def bmm_out(A, B, out):
     logger.debug("GEMS BMM_OUT")
     assert A.shape[0] == B.shape[0] == out.shape[0], "Batch dim mismatch"
