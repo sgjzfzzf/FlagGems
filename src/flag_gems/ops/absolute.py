@@ -16,6 +16,7 @@
 import logging
 
 import torch
+import trident
 import triton
 import triton.language as tl
 
@@ -50,6 +51,7 @@ def _absolute_complex_kernel(ri_ptr, out_ptr, n_elements, BLOCK_SIZE: tl.constex
     tl.store(out_ptr + offsets, y, mask=mask)
 
 
+@trident.jit
 def absolute(input: torch.Tensor):
     logger.debug("GEMS ABSOLUTE")
     x = input.contiguous()
