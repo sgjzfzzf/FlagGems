@@ -87,6 +87,7 @@ class CodeGenConfig:
 
     prefer_block_pointer: bool
     prefer_1d_tile: bool
+    enable_trident_jit: bool = False
     # gen_configs: -> configs
     # prune_config: (as jit function, ) cofigs -> configs
 
