@@ -542,9 +542,9 @@ class LibTuner(triton.runtime.Autotuner):
             strategy = LibTuner.get_strategy(strategy)
         if not isinstance(strategy, (list, tuple)):
             strategy = [strategy] * len(self.keys)
-        assert len(strategy) == len(
-            self.keys
-        ), f"the length of strategy {len(strategy)} must match the length of keys {len(self.keys)}"
+        assert len(strategy) == len(self.keys), (
+            f"the length of strategy {len(strategy)} must match the length of keys {len(self.keys)}"
+        )
         return [LibTuner.get_strategy(s) if isinstance(s, str) else s for s in strategy]
 
     def _set_configs_and_strategy(self, configs, strategy, *, mode=None):
@@ -1483,9 +1483,9 @@ def libtuner(
 
     if isinstance(policy, str):
         policy = LibTuner.get(policy)
-    assert issubclass(
-        policy, LibTuner
-    ), f"the class of {policy.__name__} is {policy.__class__.__name__}, not a subclass of {LibTuner.__name__}"
+    assert issubclass(policy, LibTuner), (
+        f"the class of {policy.__name__} is {policy.__class__.__name__}, not a subclass of {LibTuner.__name__}"
+    )
 
     def decorator(fn):
         """Construct the selected policy class around a Triton JIT kernel."""
@@ -1641,7 +1641,7 @@ class LibEntry(triton.KernelInterface):
                 k_args[param_names[i]] = arg
                 dns_args.append(hashable_arg)
             else:
-                if major_version == 3 and 3 <= minor_version <= 6:
+                if major_version == 3 and 3 <= minor_version <= 7:
                     k_args[param_names[i]] = arg
                 const_args.append(hashable_arg)
         for p in self.jit_function.params[len(args) :]:
@@ -1654,7 +1654,7 @@ class LibEntry(triton.KernelInterface):
 
             if p.is_constexpr:
                 const_args.append(val)
-                if major_version == 3 and 3 <= minor_version <= 6:
+                if major_version == 3 and 3 <= minor_version <= 7:
                     k_args[p.name] = val
             elif p.do_not_specialize:
                 dns_args.append(val)
@@ -1756,7 +1756,7 @@ class LibEntry(triton.KernelInterface):
             for pre_hook, hook_kwargs in launch_pre_hooks:
                 pre_hook({**hook_nargs, **hook_kwargs})
 
-        if major_version == 3 and 3 <= minor_version <= 6:
+        if major_version == 3 and 3 <= minor_version <= 7:
             all_args = []
             missing_keys = []
             for key in list(self.signature.parameters.keys()):
