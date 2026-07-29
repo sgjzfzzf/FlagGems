@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
 import importlib
 import os
 from dataclasses import dataclass
@@ -227,7 +228,7 @@ class FunctionSchema:
         else:
             for _ in range(self.num_outputs()):
                 output_types.append("StridedBuffer")
-        sig = f'Pointwise: {", ".join(input_types)} -> {", ".join(output_types)}'
+        sig = f"Pointwise: {', '.join(input_types)} -> {', '.join(output_types)}"
         return sig
 
     def _compute_input_id(self):
@@ -274,7 +275,8 @@ class KernelGenerator:
         code.newline()
 
     def gen_decorators(self, code):
-        code.writeline("@libentry()")
+        if not self.config.enable_trident_jit:
+            code.writeline("@libentry()")
         num_non_tensor_args = self.fx.num_non_tensor_args()
         if num_non_tensor_args > 0:
             # we do not specialize non tensor args since they are passed into the inlined function
@@ -830,7 +832,10 @@ class WrapperGenerator:
         # tensors). We emphasize that these parameters are added in-addition, we enforce
         # that they be passed by keyword. After all, out0, out1, ... does not mismatch
         # names form the scalar function, since it does not have output parameters.
-        params.append("/")
+        # NOTE: we intentionally omit the "/" positional-only separator here to
+        # ensure Dynamo (used by Trident) can correctly capture scalar args into
+        # kernel_side_table. Without it, positional-only args like val0 are not
+        # exported and cause "missing runtime argument" errors during import.
         params.append("*")  # output params must be passed by keyword
 
         for i in range(schema.num_output_tensors()):
@@ -874,7 +879,7 @@ class WrapperGenerator:
                 )
             code.writeline("tile_size = math.prod(tile_sizes)")
             code.writeline(
-                "num_tiles = math.prod(triton.cdiv(size, tile_size) for size, tile_size in zip(shape, tile_sizes))"
+                "num_tiles = math.prod([triton.cdiv(size, tile_size) for size, tile_size in zip(shape, tile_sizes)])"
             )
 
             if self.name.find("fill_scalar") != -1 and major >= 9:
@@ -1050,6 +1055,8 @@ class WrapperGenerator:
         code.writeline(f"return {return_exprs}")
 
     def codegen_nd_tile(self, code):
+        if self.config.enable_trident_jit:
+            code.writeline("@trident.jit")
         self.gen_signature(code)
 
         with code.indent():
@@ -1062,6 +1069,8 @@ class WrapperGenerator:
         return code
 
     def codegen_1d_tile(self, code):
+        if self.config.enable_trident_jit:
+            code.writeline("@trident.jit")
         self.gen_signature(code)
 
         with code.indent():
@@ -1187,9 +1196,14 @@ class ModuleGenerator:
         code.writeline("    stride_order,")
         code.writeline(")")
         code.writeline("from flag_gems.utils.tensor_wrapper import StridedBuffer")
-        code.writeline("from flag_gems.utils.libentry import libentry")
+        if not self.config.enable_trident_jit:
+            code.writeline("from flag_gems.utils.libentry import libentry")
         code.writeline("from flag_gems.utils import triton_lang_extension as ext")
         code.writeline("from flag_gems.runtime import torch_device_fn")
+
+        if self.config.enable_trident_jit:
+            code.writeline("import trident")
+            code.newline()
 
         # Generate extra imports and local JIT deps of the scalar function
         jit_dep_imports, local_jit_sources = self._collect_jit_deps(self.scalar_fn)
@@ -1257,7 +1271,13 @@ class PointwiseDynamicFunction:
     The generated code are written out to the cache directory (defaults to ~/.flaggems).
     """
 
-    def __init__(self, op_desc: FunctionSchema, scalar_fn: JITFunction, config=None):
+    def __init__(
+        self,
+        op_desc: FunctionSchema,
+        scalar_fn: JITFunction,
+        config=None,
+        enable_trident: bool = False,
+    ):
         self.fx = op_desc
 
         assert isinstance(scalar_fn, JITFunction)
@@ -1265,7 +1285,9 @@ class PointwiseDynamicFunction:
         self._scalar_fn_cache_key = scalar_fn.cache_key
         self.pid = os.getpid()
 
-        self.config: CodeGenConfig = config or get_codegen_config()
+        self.config: CodeGenConfig = copy.copy(config or get_codegen_config())
+        if enable_trident:
+            self.config.enable_trident_jit = True
 
         # instantiated & cached overloads
         self.overloads: Mapping[str, Callable] = {}
@@ -1312,7 +1334,7 @@ class PointwiseDynamicFunction:
     # -------------------- call entry --------------------
 
     def __call__(self, *args, **kwargs):
-        if self._should_use_complex_path(args):
+        if not self.config.enable_trident_jit and self._should_use_complex_path(args):
             return self._call_complex_dispatch(*args, **kwargs)
         return self._call_real_impl(*args, **kwargs)
 
@@ -1531,7 +1553,30 @@ class PointwiseDynamicFunction:
         INT32_MAX = torch.iinfo(torch.int32).max
         if tensors[0].numel() > INT32_MAX:
             self.config.prefer_block_pointer = False
-        if self.use_fast_path(tensors):  # dimension collapse & use physical ordering
+        if self.config.enable_trident_jit:
+            # Trident path: use raw tensors (no StridedBuffer) so Dynamo can trace
+            shapes = [item.shape for item in in_tensors]
+            task_shape = broadcast_shapes(shapes)
+            ndim = len(task_shape)
+
+            for item in tensors:
+                if item.shape == task_shape:
+                    allocated_outputs = [
+                        torch.empty_like(item, dtype=dtype)
+                        for dtype in outputs_dtypes_for_allocation
+                    ]
+                    break
+            else:  # nobreak
+                device = tensors[0].device
+                allocated_outputs = [
+                    torch.empty(task_shape, dtype=dtype, device=device)
+                    for dtype in outputs_dtypes_for_allocation
+                ]
+
+            for seq_id, output_id in enumerate(outputs_that_need_allocation):
+                kwargs[f"out{output_id}"] = allocated_outputs[seq_id]
+
+        elif self.use_fast_path(tensors):  # dimension collapse & use physical ordering
             allocated_outputs = [
                 torch.empty_like(tensors[0], dtype=dtype)
                 for dtype in outputs_dtypes_for_allocation
@@ -1619,11 +1664,15 @@ class PointwiseDynamicFunction:
         return (ndim, args, kwargs)
 
     def _unwrap(self, tensors):
-        # unwrap StridedBuffer to get Tensor
+        # unwrap StridedBuffer to get Tensor; in trident mode outputs are
+        # already raw Tensors so return as-is.
         if self.fx.num_output_tensors() == 1:
             item = tensors
-            return item.unwrap()
-        return tuple(item.unwrap() for item in tensors)
+            return item.unwrap() if isinstance(item, StridedBuffer) else item
+        return tuple(
+            (item.unwrap() if isinstance(item, StridedBuffer) else item)
+            for item in tensors
+        )
 
     def _compute_kernel_names(self, ndim: int) -> Tuple[str, str, str]:
         """Compute kernel name, wrapper name, and file path for a given ndim.
@@ -1640,6 +1689,7 @@ class PointwiseDynamicFunction:
 
         file_name = (
             f"pointwise_dynamic_{self._scalar_fn_cache_key}_{kernel_name}_"
+            f"{'trident_' if self.config.enable_trident_jit else ''}"
             f"{'1d_tile_' if self.config.prefer_1d_tile else ''}"
             f"{'bptr' if (not self.config.prefer_1d_tile and self.config.prefer_block_pointer) else ''}"
             f"_t{self.config.max_tile_size}"
@@ -1746,6 +1796,7 @@ def pointwise_dynamic(
     num_outputs: Optional[int] = None,
     promotion_methods: Optional[Tuple[int, ...]] = None,
     config: Optional[CodeGenConfig] = None,
+    enable_trident: bool = False,
 ):
     def decorator(fn):
         nonlocal num_inputs
@@ -1758,7 +1809,7 @@ def pointwise_dynamic(
             num_outputs=num_outputs,
             promotion_methods=promotion_methods,
         )
-        return PointwiseDynamicFunction(op_desc, fn, config)
+        return PointwiseDynamicFunction(op_desc, fn, config, enable_trident)
 
     if f is not None:
         return decorator(f)
