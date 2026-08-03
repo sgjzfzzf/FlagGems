@@ -18,7 +18,6 @@ import torch
 import triton
 import triton.language as tl
 
-from flag_gems.utils import libentry
 from flag_gems.utils import triton_lang_extension as ext
 
 logger = logging.getLogger(__name__)
@@ -178,7 +177,6 @@ def mac_loop(
         tl.store(C_, acc, mask=mask)
 
 
-@libentry()
 @triton.jit(
     do_not_specialize=[
         "iters_per_pid",
@@ -280,7 +278,6 @@ def first_wave(
         start_iter = end_iter
 
 
-@libentry()
 @triton.jit(
     do_not_specialize=[
         "iters_per_pid",
@@ -396,7 +393,6 @@ def first_wave_for_bf16(
         start_iter = end_iter
 
 
-@libentry()
 @triton.jit
 def classic_mm(
     A,
