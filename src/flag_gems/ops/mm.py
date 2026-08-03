@@ -15,19 +15,19 @@
 import logging
 
 import torch
+import trident
 import triton
 import triton.language as tl
 
 from flag_gems import runtime
 from flag_gems.ops.mm_streamk import streamk_mm
 from flag_gems.runtime import torch_device_fn
-from flag_gems.utils import libentry, libtuner
+from flag_gems.utils import libtuner
 from flag_gems.utils import triton_lang_extension as ext
 from flag_gems.utils.device_info import get_device_capability, get_sm_count
 from flag_gems.utils.triton_version_utils import (  # noqa: F401
     HAS_TLE,
     HAS_TLE_DEVICE_MESH,
-    _triton_version_at_least,
 )
 
 if HAS_TLE_DEVICE_MESH:
@@ -56,7 +56,6 @@ def prev_multiple_of(a, b):
     return tl.cdiv(a, b) * b - b
 
 
-@libentry()
 @libtuner(
     configs=runtime.get_tuned_config("mm"),
     # Add 'stride_am' and 'stride_bk' to trigger autotune for tensors with the same shape but different strides.
@@ -442,7 +441,6 @@ def general_mm(a, b, c, M, N, K):
     return c
 
 
-@libentry()
 @libtuner(
     configs=runtime.get_tuned_config("mm_self_transpose"),
     key=["M", "K", "stride_am", "stride_ak"],
@@ -535,9 +533,7 @@ def syrk_mm(a, c, M, K):
         # Number of tile rows is tiles = ceil(M / BLOCK_M).
         # Packed lower triangle contains:
         #   1 + 2 + ... + tiles = tiles * (tiles + 1) / 2
-        triton.cdiv(M, META["BLOCK_M"])
-        * (triton.cdiv(M, META["BLOCK_M"]) + 1)
-        // 2,
+        triton.cdiv(M, META["BLOCK_M"]) * (triton.cdiv(M, META["BLOCK_M"]) + 1) // 2,
     )
     with torch_device_fn.device(a.device):
         mm_kernel_syrk[grid](
@@ -569,6 +565,14 @@ def streamk_scenario(a, b, M, N, K):
     )
 
 
+@trident.jit
+def _mm_impl(a, b, c, M, N, K):
+    """Internal jit-compiled mm dispatch (non-streamk paths only)."""
+    if cluster_remote_mm_scenario(a, b, c, M, N, K):
+        return cluster_remote_mm(a, b, c, M, N, K)
+    return general_mm(a, b, c, M, N, K)
+
+
 def mm(a, b):
     logger.debug("GEMS MM")
 
@@ -593,9 +597,7 @@ def mm(a, b):
     sm_count = get_sm_count()
     if streamk_scenario(a, b, M, N, K):
         return streamk_mm(a, b, c, M, N, K, sm_count=sm_count)
-    if cluster_remote_mm_scenario(a, b, c, M, N, K):
-        return cluster_remote_mm(a, b, c, M, N, K)
-    return general_mm(a, b, c, M, N, K)
+    return _mm_impl(a, b, c, M, N, K)
 
 
 def mm_out(a, b, *, out):
@@ -617,11 +619,10 @@ def mm_out(a, b, *, out):
     sm_count = get_sm_count()
     if streamk_scenario(a, b, M, N, K):
         return streamk_mm(a, b, out, M, N, K, sm_count=sm_count)
-    if cluster_remote_mm_scenario(a, b, out, M, N, K):
-        return cluster_remote_mm(a, b, out, M, N, K)
-    return general_mm(a, b, out, M, N, K)
+    return _mm_impl(a, b, out, M, N, K)
 
 
+@trident.jit
 def router_gemm(x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
     """bf16 x bf16 -> fp32 GEMM for MoE router gate. weight shape: (N, K)."""
     if x.stride(0) > 1 and x.stride(1) > 1:
