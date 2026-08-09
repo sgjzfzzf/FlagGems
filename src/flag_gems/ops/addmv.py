@@ -15,17 +15,17 @@
 import logging
 
 import torch
+import trident
 import triton
 import triton.language as tl
 
 from flag_gems.runtime import torch_device_fn
-from flag_gems.utils import broadcastable_to, libentry
+from flag_gems.utils import broadcastable_to
 from flag_gems.utils import triton_lang_extension as ext
 
 logger = logging.getLogger(__name__)
 
 
-@libentry()
 @triton.autotune(
     configs=[
         triton.Config({"BLOCK_N": 64, "BLOCK_M": 128}, num_stages=2, num_warps=4),
@@ -82,19 +82,20 @@ def addmv_kernel(
     tl.store(Out_ptrs, out_block, mask=n_mask)
 
 
-def addmv(self, mat, vec, *, beta=1, alpha=1):
+@trident.jit
+def addmv(bias, mat, vec, *, beta=1, alpha=1):
     logger.debug("GEMS ADDMV")
     assert mat.shape[1] == vec.shape[0], "incompatible dimensions"
-    assert broadcastable_to(self.shape, (mat.shape[0],)), "Incompatible self shape"
+    assert broadcastable_to(bias.shape, (mat.shape[0],)), "Incompatible self shape"
     N, M = mat.shape
     out = torch.empty((N,), device=mat.device, dtype=mat.dtype)
-    self = self.broadcast_to(out.shape)
+    bias = bias.broadcast_to(out.shape)
     grid = lambda META: (triton.cdiv(N, META["BLOCK_N"]),)
     with torch_device_fn.device(mat.device):
         addmv_kernel[grid](
             mat,
             vec,
-            self,
+            bias,
             out,
             N,
             M,
@@ -103,29 +104,30 @@ def addmv(self, mat, vec, *, beta=1, alpha=1):
             mat.stride(0),
             mat.stride(1),
             vec.stride(0),
-            self.stride(0),
+            bias.stride(0),
             out.stride(0),
         )
     return out
 
 
-def addmv_out(self, mat, vec, *, beta=1, alpha=1, out=None):
+@trident.jit
+def addmv_out(bias, mat, vec, *, beta=1, alpha=1, out=None):
     logger.debug("GEMS ADDMV OUT")
     assert mat.shape[1] == vec.shape[0], "incompatible dimensions"
-    assert broadcastable_to(self.shape, (mat.shape[0],)), "Incompatible self shape"
+    assert broadcastable_to(bias.shape, (mat.shape[0],)), "Incompatible self shape"
     N, M = mat.shape
     if out is None:
         out = torch.empty((N,), device=mat.device, dtype=mat.dtype)
     else:
         assert out.shape == (N,), "Incompatible output shape"
 
-    self = self.broadcast_to(out.shape)
+    bias = bias.broadcast_to(out.shape)
     grid = lambda META: (triton.cdiv(N, META["BLOCK_N"]),)
     with torch_device_fn.device(mat.device):
         addmv_kernel[grid](
             mat,
             vec,
-            self,
+            bias,
             out,
             N,
             M,
@@ -134,7 +136,7 @@ def addmv_out(self, mat, vec, *, beta=1, alpha=1, out=None):
             mat.stride(0),
             mat.stride(1),
             vec.stride(0),
-            self.stride(0),
+            bias.stride(0),
             out.stride(0),
         )
     return out
