@@ -57,8 +57,7 @@ def test_addmm(monkeypatch, M, N, K, scalar, dtype, b_column_major):
     alpha = beta = scalar
 
     ref_out1 = torch.addmm(ref_bias1, ref_mat1, ref_mat2, alpha=alpha, beta=beta)
-    with flag_gems.use_gems():
-        res_out1 = torch.addmm(bias1, mat1, mat2, alpha=alpha, beta=beta)
+    res_out1 = flag_gems.ops.addmm(bias1, mat1, mat2, alpha=alpha, beta=beta)
 
     utils.gems_assert_close(res_out1, ref_out1, dtype, reduce_dim=K)
 
@@ -66,8 +65,7 @@ def test_addmm(monkeypatch, M, N, K, scalar, dtype, b_column_major):
     ref_bias2 = utils.to_reference(bias2, True)
 
     ref_out2 = torch.addmm(ref_bias2, ref_mat1, ref_mat2, alpha=alpha, beta=beta)
-    with flag_gems.use_gems():
-        res_out2 = torch.addmm(bias2, mat1, mat2, alpha=alpha, beta=beta)
+    res_out2 = flag_gems.ops.addmm(bias2, mat1, mat2, alpha=alpha, beta=beta)
 
     utils.gems_assert_close(res_out2, ref_out2, dtype, reduce_dim=K)
 
@@ -92,8 +90,7 @@ def test_addmm_out(M, N, K, scalar, dtype):
     alpha = beta = scalar
 
     torch.addmm(ref_bias1, ref_mat1, ref_mat2, alpha=alpha, beta=beta, out=ref_out)
-    with flag_gems.use_gems():
-        torch.addmm(bias1, mat1, mat2, alpha=alpha, beta=beta, out=out)
+    flag_gems.ops.addmm_out(bias1, mat1, mat2, alpha=alpha, beta=beta, out=out)
 
     utils.gems_assert_close(out, ref_out, dtype, reduce_dim=K)
 
@@ -101,8 +98,7 @@ def test_addmm_out(M, N, K, scalar, dtype):
     ref_bias2 = utils.to_reference(bias2, True)
 
     torch.addmm(ref_bias2, ref_mat1, ref_mat2, alpha=alpha, beta=beta, out=ref_out)
-    with flag_gems.use_gems():
-        torch.addmm(bias2, mat1, mat2, alpha=alpha, beta=beta, out=out)
+    flag_gems.ops.addmm_out(bias2, mat1, mat2, alpha=alpha, beta=beta, out=out)
 
     utils.gems_assert_close(out, ref_out, dtype, reduce_dim=K)
 
@@ -128,10 +124,9 @@ def test_addmm_dtype_fp32_accum(M, N, K):
         alpha=1.0,
     )
 
-    with flag_gems.use_gems():
-        res_out = torch.ops.aten.addmm.dtype(
-            bias, mat1, mat2, torch.float32, beta=1.0, alpha=1.0
-        )
+    res_out = flag_gems.ops.addmm_dtype(
+        bias, mat1, mat2, torch.float32, beta=1.0, alpha=1.0
+    )
 
     if utils.TO_CPU:
         res_out = res_out.to("cpu")
@@ -161,10 +156,9 @@ def test_addmm_dtype_out_fp32_accum(M, N, K):
         alpha=1.0,
     )
 
-    with flag_gems.use_gems():
-        torch.ops.aten.addmm.dtype_out(
-            bias, mat1, mat2, torch.float32, beta=1.0, alpha=1.0, out=out
-        )
+    flag_gems.ops.addmm_dtype_out(
+        bias, mat1, mat2, torch.float32, beta=1.0, alpha=1.0, out=out
+    )
 
     if utils.TO_CPU:
         out = out.to("cpu")
