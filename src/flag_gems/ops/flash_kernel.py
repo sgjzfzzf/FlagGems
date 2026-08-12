@@ -16,7 +16,7 @@ import triton
 import triton.language as tl
 
 from flag_gems import runtime
-from flag_gems.utils import libentry, tl_extra_shim
+from flag_gems.utils import tl_extra_shim
 
 
 @triton.jit
@@ -293,7 +293,6 @@ def flash_fwd_kernel_heur_block_k(args):
     return triton.next_power_of_2(args["d"])
 
 
-@libentry()
 @triton.autotune(
     configs=list(filter(keep, runtime.get_tuned_config("attention"))),
     prune_configs_by={"early_config_prune": prune_fwd_configs},
@@ -763,7 +762,6 @@ def flash_fwd_splitkv_kernel_heur_block_k(args):
     return triton.next_power_of_2(args["d"])
 
 
-@libentry()
 @triton.heuristics(
     values={
         "BLOCK_M": block_m_splitkv_heuristic_spec_args,
@@ -1106,7 +1104,6 @@ def flash_fwd_splitkv_kernel(
         )
 
 
-@libentry()
 @triton.jit
 def flash_fwd_splitkv_combine_kernel(
     out_ptr,
@@ -1244,7 +1241,6 @@ def load_from_kvcache(
     return bK, bV
 
 
-@libentry()
 @triton.jit(
     do_not_specialize=[
         "q_batch_stride",
