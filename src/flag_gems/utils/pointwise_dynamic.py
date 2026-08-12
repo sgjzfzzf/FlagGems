@@ -1554,10 +1554,23 @@ class PointwiseDynamicFunction:
         if tensors[0].numel() > INT32_MAX:
             self.config.prefer_block_pointer = False
         if self.config.enable_trident_jit:
-            # Trident path: use raw tensors (no StridedBuffer) so Dynamo can trace
+            # Trident path: use raw tensors (no StridedBuffer) so Dynamo can trace.
+            # Materialize broadcasting as Tensor views: expand() keeps the inputs
+            # zero-copy while encoding broadcast dimensions with stride 0.
             shapes = [item.shape for item in in_tensors]
             task_shape = broadcast_shapes(shapes)
             ndim = len(task_shape)
+
+            if out_tensors:
+                for index, item in enumerate(out_tensors):
+                    if tuple(item.shape) != tuple(task_shape):
+                        raise RuntimeError(
+                            f"out tensor at index {index} shape is invalid, should be {task_shape} but is {item.shape}!"
+                        )
+                    if has_internal_overlapping(item) == MemOverlap.Yes:
+                        raise RuntimeError(
+                            "Pointwise Input arguments should not have internal overlapping."
+                        )
 
             for item in tensors:
                 if item.shape == task_shape:
@@ -1575,6 +1588,15 @@ class PointwiseDynamicFunction:
 
             for seq_id, output_id in enumerate(outputs_that_need_allocation):
                 kwargs[f"out{output_id}"] = allocated_outputs[seq_id]
+
+            args = tuple(
+                (
+                    item.expand(task_shape)
+                    if schema.is_tensor(i) and item.shape != task_shape
+                    else item
+                )
+                for i, item in enumerate(args)
+            )
 
         elif self.use_fast_path(tensors):  # dimension collapse & use physical ordering
             allocated_outputs = [
