@@ -16,12 +16,12 @@ import logging
 import math
 
 import torch
+import trident
 import triton
 import triton.language as tl
 
 from flag_gems import runtime
 from flag_gems.ops.conv2d import conv2d_output_size
-from flag_gems.utils import libentry
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,6 @@ def conv3d_output_size(
     return conv2d_output_size(in_size, kernel_size, stride, padding, dilation)
 
 
-@libentry()
 @triton.autotune(
     configs=runtime.get_tuned_config("conv3d_forward"),
     key=[
@@ -228,6 +227,134 @@ def conv3d_forward_kernel(
     tl.store(output_pointer, accum, mask=output_mask)
 
 
+@trident.jit
+def _conv3d_forward_impl(
+    input_pointer,
+    weight_pointer,
+    bias_pointer,
+    groups,
+    stride_depth,
+    stride_height,
+    stride_width,
+    padding_depth,
+    padding_height,
+    padding_width,
+    dilation_depth,
+    dilation_height,
+    dilation_width,
+):
+    """Trident-JIT compiled conv3d forward: validation, size derivation,
+    K>=16 channel padding, output allocation and kernel launch.
+
+    stride/padding/dilation arrive as pre-parsed scalar triples: the string
+    padding ("same"/"valid") and the tuple/int unpacking must stay in Python
+    (the "same" slice happens there too), and passing raw tuple args through
+    the trident.jit boundary was observed to mis-merge sub-modules."""
+    # Validation (constant-folded at trace time for valid shapes)
+    assert input_pointer.ndim == 5, (
+        f"Input must be 5D, received shape {input_pointer.shape}"
+    )
+    assert weight_pointer.ndim == 5, (
+        f"Weights must be 5D, received shape {weight_pointer.shape}"
+    )
+    assert bias_pointer.ndim == 1, (
+        f"Bias must be 1D, received shape {bias_pointer.shape}"
+    )
+    assert input_pointer.shape[1] == groups * weight_pointer.shape[1], (
+        f"Incompatible input ({input_pointer.shape}) and weights ({weight_pointer.shape}) shape with {groups} groups"
+    )
+    assert weight_pointer.shape[0] == bias_pointer.shape[0], (
+        f"Incompatible weights ({weight_pointer.shape}) and bias ({bias_pointer.shape}) shape"
+    )
+
+    in_n = input_pointer.size(0)
+    input_depth = input_pointer.size(2)
+    input_height = input_pointer.size(3)
+    input_width = input_pointer.size(4)
+    out_c = weight_pointer.size(0)
+    weight_c = weight_pointer.size(1)
+    weight_depth = weight_pointer.size(2)
+    weight_height = weight_pointer.size(3)
+    weight_width = weight_pointer.size(4)
+
+    # Triton tl.dot requires K >= 16 (weight_c dim). Pad when below.
+    if weight_c < 16:
+        pad_c = 16 - weight_c
+        if groups == 1:
+            input_pointer = torch.ops.aten.constant_pad_nd(
+                input_pointer, (0, 0, 0, 0, 0, 0, 0, pad_c), 0.0
+            )
+        else:
+            N, _, D, H, W = input_pointer.shape
+            input_pointer = input_pointer.reshape(N, groups, weight_c, D, H, W)
+            input_pointer = torch.ops.aten.constant_pad_nd(
+                input_pointer, (0, 0, 0, 0, 0, 0, 0, pad_c), 0.0
+            )
+            input_pointer = input_pointer.reshape(
+                N, groups * (weight_c + pad_c), D, H, W
+            )
+        weight_pointer = torch.ops.aten.constant_pad_nd(
+            weight_pointer, (0, 0, 0, 0, 0, 0, 0, pad_c), 0.0
+        )
+        weight_c = weight_c + pad_c
+
+    out_depth = conv3d_output_size(
+        input_depth, weight_depth, stride_depth, padding_depth, dilation_depth
+    )
+    out_height = conv3d_output_size(
+        input_height, weight_height, stride_height, padding_height, dilation_height
+    )
+    out_width = conv3d_output_size(
+        input_width, weight_width, stride_width, padding_width, dilation_width
+    )
+    output_dtype = input_pointer.dtype
+    output = torch.empty(
+        (in_n, out_c, out_depth, out_height, out_width),
+        device=input_pointer.device,
+        dtype=output_dtype,
+    )
+
+    grid = lambda META: (
+        triton.cdiv(
+            in_n * out_depth * out_height * out_width, META["BLOCK_NI_DO_HO_WO"]
+        ),
+        triton.cdiv(out_c // groups, META["BLOCK_CO"]),
+        groups,
+    )
+    conv3d_forward_kernel[grid](
+        input_pointer,
+        weight_pointer,
+        output,
+        bias_pointer,
+        in_n,
+        input_depth,
+        input_height,
+        input_width,
+        out_c,
+        out_depth,
+        out_height,
+        out_width,
+        *input_pointer.stride(),
+        *weight_pointer.stride(),
+        *output.stride(),
+        weight_c,
+        weight_depth,
+        weight_height,
+        weight_width,
+        stride_depth,
+        stride_height,
+        stride_width,
+        padding_depth,
+        padding_height,
+        padding_width,
+        dilation_depth,
+        dilation_height,
+        dilation_width,
+        groups=groups,
+    )
+    return output
+
+
 # class Conv3d(torch.autograd.Function):
 #     @staticmethod
 #     def forward(ctx, input, weight, bias, stride, padding, dilation, groups):
@@ -236,18 +363,10 @@ def conv3d_forward_kernel(
 
 def conv3d(input, weight, bias=None, stride=1, padding=0, dilation=1, groups=1):
     logger.debug("GEMS CONV3D")
-    assert weight.ndim == 5, "Weights must be 5D, received shape {weight.shape}"
-    assert (
-        bias is None or bias.ndim == 1
-    ), "Bias must be 1D, received shape {bias.shape}"
 
-    assert (
-        input.shape[1] == groups * weight.shape[1]
-    ), "Incompatible input ({input.shape}) and weights ({weight.shape}) shape with {groups} groups"
-    assert (
-        bias is None or weight.shape[0] == bias.shape[0]
-    ), "Incompatible weights ({weight.shape}) and bias ({bias.shape}) shape"
-
+    # stride/padding/dilation are parsed here: the string padding
+    # ("same"/"valid") and the trailing slice for "same" cannot cross the
+    # trident.jit boundary, and the impl asserts the validated shapes.
     if isinstance(stride, (list, tuple)):
         stride_depth, stride_height, stride_width = stride
     else:
@@ -258,12 +377,13 @@ def conv3d(input, weight, bias=None, stride=1, padding=0, dilation=1, groups=1):
     else:
         dilation_depth = dilation_height = dilation_width = dilation
 
+    padding_is_same = False
     if isinstance(padding, str):
         if padding == "same":
-            assert (
-                stride_depth == 1 and stride_height == 1 and stride_width == 1
-            ), "Doesn't support any stride values other than 1 in padding = 'same' mode, \
+            assert stride_depth == 1 and stride_height == 1 and stride_width == 1, (
+                "Doesn't support any stride values other than 1 in padding = 'same' mode, \
                 received stride value {stride}"
+            )
             id = input.shape[-3]
             ih = input.shape[-2]
             iw = input.shape[-1]
@@ -312,6 +432,7 @@ def conv3d(input, weight, bias=None, stride=1, padding=0, dilation=1, groups=1):
                 / stride_width
                 + 1
             )
+            padding_is_same = True
         elif padding == "valid":
             padding_depth = padding_height = padding_width = 0
         else:
@@ -323,84 +444,16 @@ def conv3d(input, weight, bias=None, stride=1, padding=0, dilation=1, groups=1):
     else:
         padding_depth = padding_height = padding_width = padding
 
-    in_n, _, input_depth, input_height, input_width = input.shape
-    out_c, weight_c, weight_depth, weight_height, weight_width = weight.shape
-
-    # Triton tl.dot requires K >= 16. The K dimension in conv3d im2col matmul
-    # is BLOCK_CI which tiles over weight_c. When weight_c < 16, AABS
-    # (Auto-Adjusted Block Size) shrinks BLOCK_CI to next_power_of_2(weight_c)
-    # which violates the K >= 16 constraint. Pad input/weight channels to 16.
-    _MIN_DOT_K = 16
-    if weight_c < _MIN_DOT_K:
-        pad_c = _MIN_DOT_K - weight_c
-        if groups == 1:
-            # Simple case: pad channel dim at the end (dim=1 for 5D input)
-            input = torch.nn.functional.pad(input, (0, 0, 0, 0, 0, 0, 0, pad_c))
-        else:
-            # For grouped conv, must pad each group's channels independently.
-            # Reshape to (N, groups, weight_c, D, H, W), pad weight_c dim, reshape back.
-            N, C, D, H, W = input.shape
-            input = input.reshape(N, groups, weight_c, D, H, W)
-            input = torch.nn.functional.pad(input, (0, 0, 0, 0, 0, 0, 0, pad_c))
-            input = input.reshape(N, groups * (weight_c + pad_c), D, H, W)
-        # Pad weight: (out_c, weight_c, kD, kH, kW) -> (out_c, weight_c+pad_c, kD, kH, kW)
-        weight = torch.nn.functional.pad(weight, (0, 0, 0, 0, 0, 0, 0, pad_c))
-        weight_c = weight_c + pad_c
-
-    out_depth = conv3d_output_size(
-        input_depth, weight_depth, stride_depth, padding_depth, dilation_depth
-    )
-
-    out_height = conv3d_output_size(
-        input_height, weight_height, stride_height, padding_height, dilation_height
-    )
-    out_width = conv3d_output_size(
-        input_width, weight_width, stride_width, padding_width, dilation_width
-    )
-
-    output_dtype = input.dtype
-    output = torch.empty(
-        (in_n, out_c, out_depth, out_height, out_width),
-        device=input.device,
-        dtype=output_dtype,
-    )
-
-    # BLOCK_NI_HO_WO along the in_n, out_height, and out_width dimensions,
-    # BLOCK_CO along the out_c,
-    # one group per cat
-    grid = lambda META: (
-        triton.cdiv(
-            in_n * out_depth * out_height * out_width, META["BLOCK_NI_DO_HO_WO"]
-        ),
-        triton.cdiv(out_c // groups, META["BLOCK_CO"]),
-        groups,
-    )
-
+    # trident.jit cannot merge an optional (None) tensor argument: a None-then-
+    # tensor call order silently drops the tensor, so always pass a real bias.
     if bias is None:
-        bias_pointer = torch.zeros(out_c, device=input.device, dtype=output_dtype)
-    else:
-        bias_pointer = bias
+        bias = torch.zeros(weight.shape[0], device=input.device, dtype=input.dtype)
 
-    conv3d_forward_kernel[grid](
+    output = _conv3d_forward_impl(
         input,
         weight,
-        output,
-        bias_pointer,
-        in_n,
-        input_depth,
-        input_height,
-        input_width,
-        out_c,
-        out_depth,
-        out_height,
-        out_width,
-        *input.stride(),
-        *weight.stride(),
-        *output.stride(),
-        weight_c,
-        weight_depth,
-        weight_height,
-        weight_width,
+        bias,
+        groups,
         stride_depth,
         stride_height,
         stride_width,
@@ -410,10 +463,9 @@ def conv3d(input, weight, bias=None, stride=1, padding=0, dilation=1, groups=1):
         dilation_depth,
         dilation_height,
         dilation_width,
-        groups=groups,
     )
 
-    if padding == "same":
+    if padding_is_same:
         output = output[..., (od - id) :, (oh - ih) :, (ow - iw) :]
 
     return output

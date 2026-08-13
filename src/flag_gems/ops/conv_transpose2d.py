@@ -23,10 +23,9 @@ PyTorch API surface.  There are no shape-specific dispatch constants.
 import logging
 
 import torch
+import trident
 import triton
 import triton.language as tl
-
-from flag_gems.utils import libentry
 
 logger = logging.getLogger(__name__)
 
@@ -378,7 +377,6 @@ def _can_use_stride2_pad1_3x3_direct(
     )
 
 
-@libentry()
 @triton.jit
 def _conv_transpose2d_direct_kernel(
     input_pointer,
@@ -500,7 +498,6 @@ def _conv_transpose2d_direct_kernel(
     tl.store(output_pointer + output_offsets, accum, mask=output_mask)
 
 
-@libentry()
 @triton.jit
 def _conv_transpose2d_stride2_pad1_3x3_kernel(
     input_pointer,
@@ -620,7 +617,6 @@ def _conv_transpose2d_stride2_pad1_3x3_kernel(
     tl.store(output_pointer + output_offsets, accum, mask=output_mask)
 
 
-@libentry()
 @triton.jit
 def _conv_transpose2d_residue_kernel(
     input_pointer,
@@ -748,7 +744,6 @@ def _conv_transpose2d_residue_kernel(
     tl.store(output_pointer + output_offsets, accum, mask=output_mask)
 
 
-@libentry()
 @triton.jit
 def _conv_transpose2d_general_kernel(
     input_pointer,
@@ -825,7 +820,6 @@ def _conv_transpose2d_general_kernel(
     tl.store(output_pointer + offsets, accum, mask=mask)
 
 
-@libentry()
 @triton.jit
 def _conv_transpose2d_residue_static_kernel(
     input_pointer,
@@ -949,7 +943,6 @@ def _conv_transpose2d_residue_static_kernel(
     tl.store(output_pointer + output_offsets, accum, mask=output_mask)
 
 
-@libentry()
 @triton.jit
 def _conv_transpose2d_scatter_init_kernel(
     bias_pointer,
@@ -971,7 +964,6 @@ def _conv_transpose2d_scatter_init_kernel(
     tl.store(output_pointer + offsets, values, mask=mask)
 
 
-@libentry()
 @triton.jit
 def _conv_transpose2d_scatter_no_overlap_kernel(
     input_pointer,
@@ -1073,7 +1065,6 @@ def _conv_transpose2d_scatter_no_overlap_kernel(
     tl.store(output_pointer + output_offsets, accum, mask=output_mask)
 
 
-@libentry()
 @triton.jit
 def _conv_transpose2d_1x1_kernel(
     input_pointer,
@@ -1173,33 +1164,43 @@ def _can_use_pointwise_1x1(
     )
 
 
-def _conv_transpose2d_pointwise_1x1(input, weight, bias, groups):
-    batch, input_channels, input_height, input_width = input.shape
-    _, output_channels_per_group, _weight_height, _weight_width = weight.shape
+@trident.jit
+def _conv_transpose2d_pointwise_1x1_impl(
+    input_pointer,
+    weight_pointer,
+    bias_pointer,
+    groups,
+    has_bias,
+    block_nhw,
+    block_ci,
+    block_co,
+    co_blocks_per_group,
+    num_warps,
+):
+    """Trident-JIT compiled 1x1 conv_transpose2d launch: derives sizes,
+    allocates the output and launches the kernel."""
+    batch = input_pointer.size(0)
+    input_channels = input_pointer.size(1)
+    input_height = input_pointer.size(2)
+    input_width = input_pointer.size(3)
+    output_channels_per_group = weight_pointer.size(1)
     output_channels = output_channels_per_group * groups
     output = torch.empty(
         (batch, output_channels, input_height, input_width),
-        device=input.device,
-        dtype=input.dtype,
+        device=input_pointer.device,
+        dtype=input_pointer.dtype,
     )
-    if output.numel() == 0:
+    if batch * output_channels * input_height * input_width == 0:
         return output
 
     input_channels_per_group = input_channels // groups
-    block_nhw = 128 if input.dtype is not torch.float32 else 64
-    block_ci = 16 if input.dtype is torch.float32 else 32
-    if input_channels_per_group <= 16:
-        block_ci = 16
-    block_co = 16 if output_channels_per_group <= 16 else 32
-    co_blocks_per_group = triton.cdiv(output_channels_per_group, block_co)
     grid = (
         triton.cdiv(batch * input_height * input_width, block_nhw),
         groups * co_blocks_per_group,
     )
-    bias_pointer = bias if bias is not None else input
     _conv_transpose2d_1x1_kernel[grid](
-        input,
-        weight,
+        input_pointer,
+        weight_pointer,
         bias_pointer,
         output,
         batch,
@@ -1209,32 +1210,72 @@ def _conv_transpose2d_pointwise_1x1(input, weight, bias, groups):
         output_channels,
         output_channels_per_group,
         input_channels_per_group,
-        bias is not None,
+        has_bias,
         co_blocks_per_group,
         BLOCK_NHW=block_nhw,
         BLOCK_CI=block_ci,
         BLOCK_CO=block_co,
-        num_warps=4,
+        num_warps=num_warps,
     )
     return output
 
 
-def _conv_transpose2d_scatter_no_overlap(
-    input,
-    weight,
-    bias,
+def _conv_transpose2d_pointwise_1x1(input, weight, bias, groups):
+    _, input_channels, _, _ = input.shape
+    _, output_channels_per_group, _, _ = weight.shape
+    input_channels_per_group = input_channels // groups
+    block_nhw = 128 if input.dtype is not torch.float32 else 64
+    block_ci = 16 if input.dtype is torch.float32 else 32
+    if input_channels_per_group <= 16:
+        block_ci = 16
+    block_co = 16 if output_channels_per_group <= 16 else 32
+    co_blocks_per_group = triton.cdiv(output_channels_per_group, block_co)
+    return _conv_transpose2d_pointwise_1x1_impl(
+        input,
+        weight,
+        bias if bias is not None else input,
+        groups,
+        bias is not None,
+        block_nhw,
+        block_ci,
+        block_co,
+        co_blocks_per_group,
+        4,
+    )
+
+
+@trident.jit
+def _conv_transpose2d_scatter_no_overlap_impl(
+    input_pointer,
+    weight_pointer,
+    bias_pointer,
+    groups,
     stride_h,
     stride_w,
     padding_h,
     padding_w,
-    dilation_h,
-    dilation_w,
     output_padding_h,
     output_padding_w,
-    groups,
+    dilation_h,
+    dilation_w,
+    has_bias,
+    init_block,
+    block_nhw,
+    block_ci,
+    block_co,
+    num_warps,
+    num_stages,
 ):
-    batch, input_channels, input_height, input_width = input.shape
-    _, output_channels_per_group, weight_height, weight_width = weight.shape
+    """Trident-JIT compiled no-overlap scatter conv_transpose2d launch:
+    derives sizes, allocates the output, runs the init kernel (bias fill) and
+    the scatter kernel."""
+    batch = input_pointer.size(0)
+    input_channels = input_pointer.size(1)
+    input_height = input_pointer.size(2)
+    input_width = input_pointer.size(3)
+    output_channels_per_group = weight_pointer.size(1)
+    weight_height = weight_pointer.size(2)
+    weight_width = weight_pointer.size(3)
     output_channels = output_channels_per_group * groups
     output_height = (
         (input_height - 1) * stride_h
@@ -1252,15 +1293,13 @@ def _conv_transpose2d_scatter_no_overlap(
     )
     output = torch.empty(
         (batch, output_channels, output_height, output_width),
-        device=input.device,
-        dtype=input.dtype,
+        device=input_pointer.device,
+        dtype=input_pointer.dtype,
     )
-    total_elements = output.numel()
+    total_elements = batch * output_channels * output_height * output_width
     if total_elements == 0:
         return output
 
-    init_block = 1024
-    bias_pointer = bias if bias is not None else input
     _conv_transpose2d_scatter_init_kernel[(triton.cdiv(total_elements, init_block),)](
         bias_pointer,
         output,
@@ -1268,23 +1307,12 @@ def _conv_transpose2d_scatter_no_overlap(
         output_channels,
         output_height,
         output_width,
-        bias is not None,
+        has_bias,
         BLOCK_SIZE=init_block,
         num_warps=4,
     )
 
     input_channels_per_group = input_channels // groups
-    if input_channels_per_group <= 16:
-        block_ci = 16
-    elif input_channels_per_group <= 64:
-        block_ci = 64 if input.dtype is not torch.float32 else 32
-    else:
-        block_ci = 64
-    block_co = 16 if output_channels_per_group <= 16 else 32
-    block_nhw = 32 if input.dtype is torch.float32 else 64
-    if output_channels_per_group >= 64:
-        block_nhw = 32
-
     input_nhw = batch * input_height * input_width
     grid = (
         triton.cdiv(input_nhw, block_nhw),
@@ -1292,8 +1320,8 @@ def _conv_transpose2d_scatter_no_overlap(
         groups * weight_height * weight_width,
     )
     _conv_transpose2d_scatter_no_overlap_kernel[grid](
-        input,
-        weight,
+        input_pointer,
+        weight_pointer,
         bias_pointer,
         output,
         batch,
@@ -1313,14 +1341,67 @@ def _conv_transpose2d_scatter_no_overlap(
         padding_w,
         dilation_h,
         dilation_w,
-        bias is not None,
+        has_bias,
         BLOCK_NHW=block_nhw,
         BLOCK_CI=block_ci,
         BLOCK_CO=block_co,
-        num_warps=4,
-        num_stages=3,
+        num_warps=num_warps,
+        num_stages=num_stages,
     )
     return output
+
+
+def _conv_transpose2d_scatter_no_overlap(
+    input,
+    weight,
+    bias,
+    stride_h,
+    stride_w,
+    padding_h,
+    padding_w,
+    dilation_h,
+    dilation_w,
+    output_padding_h,
+    output_padding_w,
+    groups,
+):
+    _, input_channels, _, _ = input.shape
+    _, output_channels_per_group, _, _ = weight.shape
+
+    init_block = 1024
+    input_channels_per_group = input_channels // groups
+    if input_channels_per_group <= 16:
+        block_ci = 16
+    elif input_channels_per_group <= 64:
+        block_ci = 64 if input.dtype is not torch.float32 else 32
+    else:
+        block_ci = 64
+    block_co = 16 if output_channels_per_group <= 16 else 32
+    block_nhw = 32 if input.dtype is torch.float32 else 64
+    if output_channels_per_group >= 64:
+        block_nhw = 32
+
+    return _conv_transpose2d_scatter_no_overlap_impl(
+        input,
+        weight,
+        bias if bias is not None else input,
+        groups,
+        stride_h,
+        stride_w,
+        padding_h,
+        padding_w,
+        output_padding_h,
+        output_padding_w,
+        dilation_h,
+        dilation_w,
+        bias is not None,
+        init_block,
+        block_nhw,
+        block_ci,
+        block_co,
+        4,
+        3,
+    )
 
 
 def conv_transpose2d(
@@ -1535,24 +1616,32 @@ def _select_stride2_pad1_3x3_schedule(input_dtype, input_channels, output_channe
     return block_nhw, block_ci, block_co, num_warps
 
 
-def _conv_transpose2d_stride2_pad1_3x3(input, weight):
-    batch, input_channels, input_height, input_width = input.shape
-    _, output_channels, _weight_height, _weight_width = weight.shape
+@trident.jit
+def _conv_transpose2d_stride2_pad1_3x3_impl(
+    input_pointer,
+    weight_pointer,
+    block_nhw,
+    block_ci,
+    block_co,
+    num_warps,
+):
+    """Trident-JIT compiled stride=2 pad=1 3x3 conv_transpose2d launch:
+    derives sizes, allocates the output and launches the kernel."""
+    batch = input_pointer.size(0)
+    input_channels = input_pointer.size(1)
+    input_height = input_pointer.size(2)
+    input_width = input_pointer.size(3)
+    output_channels = weight_pointer.size(1)
     output_height = input_height * 2 - 1
     output_width = input_width * 2 - 1
     output = torch.empty(
         (batch, output_channels, output_height, output_width),
-        device=input.device,
-        dtype=input.dtype,
+        device=input_pointer.device,
+        dtype=input_pointer.dtype,
     )
-    if output.numel() == 0:
+    if batch * output_channels * output_height * output_width == 0:
         return output
 
-    block_nhw, block_ci, block_co, num_warps = _select_stride2_pad1_3x3_schedule(
-        input.dtype,
-        input_channels,
-        output_channels,
-    )
     compact_height = (output_height + 1) // 2
     compact_width = (output_width + 1) // 2
     grid = (
@@ -1560,8 +1649,8 @@ def _conv_transpose2d_stride2_pad1_3x3(input, weight):
         triton.cdiv(output_channels, block_co),
     )
     _conv_transpose2d_stride2_pad1_3x3_kernel[grid](
-        input,
-        weight,
+        input_pointer,
+        weight_pointer,
         output,
         batch,
         input_height,
@@ -1571,8 +1660,8 @@ def _conv_transpose2d_stride2_pad1_3x3(input, weight):
         output_width,
         compact_height,
         compact_width,
-        *input.stride(),
-        *weight.stride(),
+        *input_pointer.stride(),
+        *weight_pointer.stride(),
         *output.stride(),
         input_channels,
         BLOCK_NHW=block_nhw,
@@ -1581,6 +1670,25 @@ def _conv_transpose2d_stride2_pad1_3x3(input, weight):
         num_warps=num_warps,
     )
     return output
+
+
+def _conv_transpose2d_stride2_pad1_3x3(input, weight):
+    _, input_channels, _, _ = input.shape
+    _, output_channels, _, _ = weight.shape
+
+    block_nhw, block_ci, block_co, num_warps = _select_stride2_pad1_3x3_schedule(
+        input.dtype,
+        input_channels,
+        output_channels,
+    )
+    return _conv_transpose2d_stride2_pad1_3x3_impl(
+        input,
+        weight,
+        block_nhw,
+        block_ci,
+        block_co,
+        num_warps,
+    )
 
 
 def _select_conv_transpose2d_direct_schedule(
@@ -1671,9 +1779,10 @@ def _select_conv_transpose2d_direct_schedule(
     return block_nhw, block_ci, block_co, num_warps
 
 
-def _conv_transpose2d_direct(
-    input,
-    weight,
+@trident.jit
+def _conv_transpose2d_direct_impl(
+    input_pointer,
+    weight_pointer,
     stride_h,
     stride_w,
     padding_h,
@@ -1682,9 +1791,20 @@ def _conv_transpose2d_direct(
     dilation_w,
     output_padding_h,
     output_padding_w,
+    block_nhw,
+    block_ci,
+    block_co,
+    num_warps,
 ):
-    batch, input_channels, input_height, input_width = input.shape
-    _, output_channels, weight_height, weight_width = weight.shape
+    """Trident-JIT compiled direct-tiled conv_transpose2d launch: derives
+    sizes, allocates the output and launches the kernel."""
+    batch = input_pointer.size(0)
+    input_channels = input_pointer.size(1)
+    input_height = input_pointer.size(2)
+    input_width = input_pointer.size(3)
+    output_channels = weight_pointer.size(1)
+    weight_height = weight_pointer.size(2)
+    weight_width = weight_pointer.size(3)
     output_height = (
         (input_height - 1) * stride_h
         - 2 * padding_h
@@ -1701,23 +1821,13 @@ def _conv_transpose2d_direct(
     )
     output = torch.empty(
         (batch, output_channels, output_height, output_width),
-        device=input.device,
-        dtype=input.dtype,
+        device=input_pointer.device,
+        dtype=input_pointer.dtype,
     )
     compact_height = triton.cdiv(output_height, stride_h)
     compact_width = triton.cdiv(output_width, stride_w)
     max_sub_spatial = batch * compact_height * compact_width
     n_subgrids = stride_h * stride_w
-
-    block_nhw, block_ci, block_co, num_warps = _select_conv_transpose2d_direct_schedule(
-        input.dtype,
-        input_channels,
-        output_channels,
-        weight_height,
-        weight_width,
-        stride_h,
-        output_padding_h,
-    )
 
     grid = (
         triton.cdiv(max_sub_spatial, block_nhw),
@@ -1725,8 +1835,8 @@ def _conv_transpose2d_direct(
         n_subgrids,
     )
     _conv_transpose2d_direct_kernel[grid](
-        input,
-        weight,
+        input_pointer,
+        weight_pointer,
         output,
         batch,
         input_height,
@@ -1734,8 +1844,8 @@ def _conv_transpose2d_direct(
         output_channels,
         output_height,
         output_width,
-        *input.stride(),
-        *weight.stride(),
+        *input_pointer.stride(),
+        *weight_pointer.stride(),
         *output.stride(),
         input_channels,
         weight_height,
@@ -1750,6 +1860,49 @@ def _conv_transpose2d_direct(
         num_warps=num_warps,
     )
     return output
+
+
+def _conv_transpose2d_direct(
+    input,
+    weight,
+    stride_h,
+    stride_w,
+    padding_h,
+    padding_w,
+    dilation_h,
+    dilation_w,
+    output_padding_h,
+    output_padding_w,
+):
+    _, input_channels, _, _ = input.shape
+    _, output_channels, weight_height, weight_width = weight.shape
+
+    block_nhw, block_ci, block_co, num_warps = _select_conv_transpose2d_direct_schedule(
+        input.dtype,
+        input_channels,
+        output_channels,
+        weight_height,
+        weight_width,
+        stride_h,
+        output_padding_h,
+    )
+
+    return _conv_transpose2d_direct_impl(
+        input,
+        weight,
+        stride_h,
+        stride_w,
+        padding_h,
+        padding_w,
+        dilation_h,
+        dilation_w,
+        output_padding_h,
+        output_padding_w,
+        block_nhw,
+        block_ci,
+        block_co,
+        num_warps,
+    )
 
 
 def _conv_transpose2d_general(
@@ -1780,6 +1933,177 @@ def _conv_transpose2d_general(
         output_padding_w,
         groups,
     )
+
+
+@trident.jit
+def _conv_transpose2d_residue_static_impl(
+    input_pointer,
+    weight_pointer,
+    bias_pointer,
+    output_pointer,
+    groups,
+    stride_h,
+    stride_w,
+    padding_h,
+    padding_w,
+    dilation_h,
+    dilation_w,
+    has_bias,
+    residue_h,
+    residue_w,
+    co_blocks_per_group,
+    block_nhw,
+    block_ci,
+    block_co,
+):
+    """Trident-JIT compiled per-residue static (fully constant) residue launch.
+    The Python wrapper loops over the stride*stride residue phases and passes
+    the shared output buffer, mirroring the two-kernel backward pattern."""
+    batch = input_pointer.size(0)
+    input_channels = input_pointer.size(1)
+    input_height = input_pointer.size(2)
+    input_width = input_pointer.size(3)
+    output_channels_per_group = weight_pointer.size(1)
+    weight_height = weight_pointer.size(2)
+    weight_width = weight_pointer.size(3)
+    output_channels = output_channels_per_group * groups
+    output_height = output_pointer.size(2)
+    output_width = output_pointer.size(3)
+    compact_height = (output_height + stride_h - 1 - residue_h) // stride_h
+    compact_width = (output_width + stride_w - 1 - residue_w) // stride_w
+    grid = (
+        triton.cdiv(batch * compact_height * compact_width, block_nhw),
+        groups * co_blocks_per_group,
+    )
+    _conv_transpose2d_residue_static_kernel[grid](
+        input_pointer,
+        weight_pointer,
+        bias_pointer,
+        output_pointer,
+        batch,
+        input_channels,
+        input_height,
+        input_width,
+        output_channels,
+        output_height,
+        output_width,
+        compact_height,
+        compact_width,
+        weight_height,
+        weight_width,
+        output_channels_per_group,
+        input_channels // groups,
+        stride_h,
+        stride_w,
+        padding_h,
+        padding_w,
+        dilation_h,
+        dilation_w,
+        has_bias,
+        residue_h,
+        residue_w,
+        co_blocks_per_group,
+        BLOCK_NHW=block_nhw,
+        BLOCK_CI=block_ci,
+        BLOCK_CO=block_co,
+        num_warps=4,
+        num_stages=2,
+    )
+
+
+@trident.jit
+def _conv_transpose2d_residue_impl(
+    input_pointer,
+    weight_pointer,
+    bias_pointer,
+    groups,
+    stride_h,
+    stride_w,
+    padding_h,
+    padding_w,
+    output_padding_h,
+    output_padding_w,
+    dilation_h,
+    dilation_w,
+    has_bias,
+    block_nhw,
+    block_ci,
+    block_co,
+    num_warps,
+):
+    """Trident-JIT compiled general residue conv_transpose2d launch: derives
+    sizes, allocates the output and launches the kernel."""
+    batch = input_pointer.size(0)
+    input_channels = input_pointer.size(1)
+    input_height = input_pointer.size(2)
+    input_width = input_pointer.size(3)
+    output_channels_per_group = weight_pointer.size(1)
+    weight_height = weight_pointer.size(2)
+    weight_width = weight_pointer.size(3)
+    output_channels = output_channels_per_group * groups
+    output_height = (
+        (input_height - 1) * stride_h
+        - 2 * padding_h
+        + dilation_h * (weight_height - 1)
+        + output_padding_h
+        + 1
+    )
+    output_width = (
+        (input_width - 1) * stride_w
+        - 2 * padding_w
+        + dilation_w * (weight_width - 1)
+        + output_padding_w
+        + 1
+    )
+    output = torch.empty(
+        (batch, output_channels, output_height, output_width),
+        device=input_pointer.device,
+        dtype=input_pointer.dtype,
+    )
+    if batch * output_channels * output_height * output_width == 0:
+        return output
+
+    input_channels_per_group = input_channels // groups
+    compact_height = triton.cdiv(output_height, stride_h)
+    compact_width = triton.cdiv(output_width, stride_w)
+    max_sub_spatial = batch * compact_height * compact_width
+    n_subgrids = stride_h * stride_w
+    co_blocks_per_group = triton.cdiv(output_channels_per_group, block_co)
+    grid = (
+        triton.cdiv(max_sub_spatial, block_nhw),
+        co_blocks_per_group,
+        groups * n_subgrids,
+    )
+    _conv_transpose2d_residue_kernel[grid](
+        input_pointer,
+        weight_pointer,
+        bias_pointer,
+        output,
+        batch,
+        input_channels,
+        input_height,
+        input_width,
+        output_channels,
+        output_height,
+        output_width,
+        weight_height,
+        weight_width,
+        output_channels_per_group,
+        input_channels_per_group,
+        stride_h,
+        stride_w,
+        padding_h,
+        padding_w,
+        dilation_h,
+        dilation_w,
+        has_bias,
+        n_subgrids,
+        BLOCK_NHW=block_nhw,
+        BLOCK_CI=block_ci,
+        BLOCK_CO=block_co,
+        num_warps=num_warps,
+    )
+    return output
 
 
 def _conv_transpose2d_residue(
@@ -1813,14 +2137,13 @@ def _conv_transpose2d_residue(
         + output_padding_w
         + 1
     )
-    output = torch.empty(
-        (batch, output_channels, output_height, output_width),
-        device=input.device,
-        dtype=input.dtype,
-    )
-    total_elements = output.numel()
+    total_elements = batch * output_channels * output_height * output_width
     if total_elements == 0:
-        return output
+        return torch.empty(
+            (batch, output_channels, output_height, output_width),
+            device=input.device,
+            dtype=input.dtype,
+        )
 
     input_channels_per_group = input_channels // groups
     if (
@@ -1839,32 +2162,22 @@ def _conv_transpose2d_residue(
         block_co = 32
         co_blocks_per_group = triton.cdiv(output_channels_per_group, block_co)
         bias_pointer = bias if bias is not None else input
+        output = torch.empty(
+            (batch, output_channels, output_height, output_width),
+            device=input.device,
+            dtype=input.dtype,
+        )
+        # The stride*stride residue phases share one output buffer; the loop
+        # stays in Python (a dynamic kernel-launch count cannot cross the
+        # trident.jit boundary), mirroring the conv2d strided-scatter pattern.
         for residue_h in range(stride_h):
-            compact_height = (output_height + stride_h - 1 - residue_h) // stride_h
             for residue_w in range(stride_w):
-                compact_width = (output_width + stride_w - 1 - residue_w) // stride_w
-                grid = (
-                    triton.cdiv(batch * compact_height * compact_width, block_nhw),
-                    groups * co_blocks_per_group,
-                )
-                _conv_transpose2d_residue_static_kernel[grid](
+                _conv_transpose2d_residue_static_impl(
                     input,
                     weight,
                     bias_pointer,
                     output,
-                    batch,
-                    input_channels,
-                    input_height,
-                    input_width,
-                    output_channels,
-                    output_height,
-                    output_width,
-                    compact_height,
-                    compact_width,
-                    weight_height,
-                    weight_width,
-                    output_channels_per_group,
-                    input_channels_per_group,
+                    groups,
                     stride_h,
                     stride_w,
                     padding_h,
@@ -1875,11 +2188,9 @@ def _conv_transpose2d_residue(
                     residue_h,
                     residue_w,
                     co_blocks_per_group,
-                    BLOCK_NHW=block_nhw,
-                    BLOCK_CI=block_ci,
-                    BLOCK_CO=block_co,
-                    num_warps=4,
-                    num_stages=2,
+                    block_nhw,
+                    block_ci,
+                    block_co,
                 )
         return output
 
@@ -1910,44 +2221,22 @@ def _conv_transpose2d_residue(
         block_nhw = 128
         num_warps = 8
 
-    compact_height = triton.cdiv(output_height, stride_h)
-    compact_width = triton.cdiv(output_width, stride_w)
-    max_sub_spatial = batch * compact_height * compact_width
-    n_subgrids = stride_h * stride_w
-    co_blocks_per_group = triton.cdiv(output_channels_per_group, block_co)
-    grid = (
-        triton.cdiv(max_sub_spatial, block_nhw),
-        co_blocks_per_group,
-        groups * n_subgrids,
-    )
-    bias_pointer = bias if bias is not None else input
-    _conv_transpose2d_residue_kernel[grid](
+    return _conv_transpose2d_residue_impl(
         input,
         weight,
-        bias_pointer,
-        output,
-        batch,
-        input_channels,
-        input_height,
-        input_width,
-        output_channels,
-        output_height,
-        output_width,
-        weight_height,
-        weight_width,
-        output_channels_per_group,
-        input_channels // groups,
+        bias if bias is not None else input,
+        groups,
         stride_h,
         stride_w,
         padding_h,
         padding_w,
+        output_padding_h,
+        output_padding_w,
         dilation_h,
         dilation_w,
         bias is not None,
-        n_subgrids,
-        BLOCK_NHW=block_nhw,
-        BLOCK_CI=block_ci,
-        BLOCK_CO=block_co,
-        num_warps=num_warps,
+        block_nhw,
+        block_ci,
+        block_co,
+        num_warps,
     )
-    return output
