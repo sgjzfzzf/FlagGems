@@ -15,11 +15,11 @@
 import logging
 
 import torch
+import trident
 import triton
 import triton.language as tl
 
 from flag_gems import runtime
-from flag_gems.utils import libentry
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,6 @@ def conv_transpose1d_output_size(
     )
 
 
-@libentry()
 @triton.autotune(
     configs=runtime.get_tuned_config("conv_transpose1d"),
     key=[
@@ -214,6 +213,114 @@ def conv_transpose1d_forward_kernel(
     tl.store(output_ptr, accum, mask=output_mask)
 
 
+@trident.jit
+def _conv_transpose1d_forward_impl(
+    input_pointer,
+    weight_pointer,
+    bias_pointer,
+    groups,
+    stride,
+    padding,
+    output_padding,
+    dilation,
+):
+    """Trident-JIT compiled conv_transpose1d forward: validation, parameter
+    parsing, size derivation, contiguity, output allocation and kernel launch."""
+    # Validation (constant-folded at trace time for valid shapes)
+    assert input_pointer.ndim == 3, (
+        f"Input must be 3D, received shape {input_pointer.shape}"
+    )
+    assert weight_pointer.ndim == 3, (
+        f"Weights must be 3D, received shape {weight_pointer.shape}"
+    )
+    assert bias_pointer.ndim == 1, (
+        f"Bias must be 1D, received shape {bias_pointer.shape}"
+    )
+
+    # Parse stride, padding, output_padding, dilation
+    if isinstance(stride, (list, tuple)):
+        stride_width = stride[0]
+    else:
+        stride_width = stride
+
+    if isinstance(padding, (list, tuple)):
+        padding_width = padding[0]
+    else:
+        padding_width = padding
+
+    if isinstance(output_padding, (list, tuple)):
+        output_padding_width = output_padding[0]
+    else:
+        output_padding_width = output_padding
+
+    if isinstance(dilation, (list, tuple)):
+        dilation_width = dilation[0]
+    else:
+        dilation_width = dilation
+
+    batch_size, in_channels, input_width = input_pointer.shape
+    in_channels_weight, out_channels_per_group, kernel_width = weight_pointer.shape
+
+    assert in_channels == in_channels_weight, (
+        f"Input channels ({in_channels}) must match weight in_channels ({in_channels_weight})"
+    )
+    assert in_channels % groups == 0, (
+        f"in_channels ({in_channels}) must be divisible by groups ({groups})"
+    )
+
+    out_channels = out_channels_per_group * groups
+
+    assert bias_pointer.shape[0] == out_channels, (
+        f"Bias shape ({bias_pointer.shape}) doesn't match out_channels ({out_channels})"
+    )
+
+    # Ensure contiguous tensors
+    input_pointer = input_pointer.contiguous()
+    weight_pointer = weight_pointer.contiguous()
+
+    out_width = conv_transpose1d_output_size(
+        input_width,
+        kernel_width,
+        stride_width,
+        padding_width,
+        output_padding_width,
+        dilation_width,
+    )
+    output_dtype = input_pointer.dtype
+    output = torch.empty(
+        (batch_size, out_channels, out_width),
+        device=input_pointer.device,
+        dtype=output_dtype,
+    )
+
+    in_channels_per_group = in_channels // groups
+    grid = lambda META: (
+        triton.cdiv(batch_size * out_width, META["BLOCK_N_OW"]),
+        triton.cdiv(out_channels_per_group, META["BLOCK_OC"]),
+        groups,
+    )
+    conv_transpose1d_forward_kernel[grid](
+        input_pointer,
+        weight_pointer,
+        output,
+        bias_pointer,
+        batch_size,
+        input_width,
+        out_channels,
+        out_width,
+        *input_pointer.stride(),
+        *weight_pointer.stride(),
+        *output.stride(),
+        in_channels_per_group,
+        kernel_width,
+        stride_width,
+        padding_width,
+        dilation_width,
+        groups=groups,
+    )
+    return output
+
+
 def conv_transpose1d(
     input,
     weight,
@@ -242,106 +349,21 @@ def conv_transpose1d(
     """
     logger.debug("GEMS CONV_TRANSPOSE1D")
 
-    assert input.ndim == 3, f"Input must be 3D, received shape {input.shape}"
-    assert weight.ndim == 3, f"Weights must be 3D, received shape {weight.shape}"
-    assert (
-        bias is None or bias.ndim == 1
-    ), f"Bias must be 1D, received shape {bias.shape}"
-
-    # Parse stride, padding, output_padding, dilation
-    if isinstance(stride, (list, tuple)):
-        stride_width = stride[0]
-    else:
-        stride_width = stride
-
-    if isinstance(padding, (list, tuple)):
-        padding_width = padding[0]
-    else:
-        padding_width = padding
-
-    if isinstance(output_padding, (list, tuple)):
-        output_padding_width = output_padding[0]
-    else:
-        output_padding_width = output_padding
-
-    if isinstance(dilation, (list, tuple)):
-        dilation_width = dilation[0]
-    else:
-        dilation_width = dilation
-
-    batch_size, in_channels, input_width = input.shape
-    in_channels_weight, out_channels_per_group, kernel_width = weight.shape
-
-    assert (
-        in_channels == in_channels_weight
-    ), f"Input channels ({in_channels}) must match weight in_channels ({in_channels_weight})"
-    assert (
-        in_channels % groups == 0
-    ), f"in_channels ({in_channels}) must be divisible by groups ({groups})"
-
-    out_channels = out_channels_per_group * groups
-
-    assert (
-        bias is None or bias.shape[0] == out_channels
-    ), f"Bias shape ({bias.shape}) doesn't match out_channels ({out_channels})"
-
-    # Calculate output size
-    out_width = conv_transpose1d_output_size(
-        input_width,
-        kernel_width,
-        stride_width,
-        padding_width,
-        output_padding_width,
-        dilation_width,
-    )
-
-    # Allocate output
-    output_dtype = input.dtype
-    output = torch.empty(
-        (batch_size, out_channels, out_width),
-        device=input.device,
-        dtype=output_dtype,
-    )
-
-    # Grid: (batch * out_width blocks, out_channels blocks, groups)
-    grid = lambda META: (
-        triton.cdiv(batch_size * out_width, META["BLOCK_N_OW"]),
-        triton.cdiv(out_channels_per_group, META["BLOCK_OC"]),
-        groups,
-    )
-
-    # Create bias pointer (zeros if no bias)
+    # trident.jit cannot merge a None/optional tensor argument (a None-then-
+    # tensor call order silently drops the tensor), so always pass a real bias
+    # tensor and materialize zeros here when bias is absent.
     if bias is None:
-        bias_pointer = torch.zeros(
-            out_channels, device=input.device, dtype=output_dtype
+        bias = torch.zeros(
+            weight.shape[1] * groups, device=input.device, dtype=input.dtype
         )
-    else:
-        bias_pointer = bias
 
-    # Ensure contiguous tensors
-    input_contig = input.contiguous()
-    weight_contig = weight.contiguous()
-
-    in_channels_per_group = in_channels // groups
-
-    conv_transpose1d_forward_kernel[grid](
-        input_contig,
-        weight_contig,
-        output,
-        bias_pointer,
-        batch_size,
-        input_width,
-        out_channels,
-        out_width,
-        *input_contig.stride(),
-        *weight_contig.stride(),
-        *output.stride(),
-        in_channels_per_group,
-        kernel_width,
-        stride_width,
-        padding_width,
-        dilation_width,
-        groups=groups,
+    return _conv_transpose1d_forward_impl(
+        input,
+        weight,
+        bias,
+        groups,
+        stride,
+        padding,
+        output_padding,
+        dilation,
     )
-
-    return output
