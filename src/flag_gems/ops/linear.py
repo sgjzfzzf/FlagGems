@@ -16,17 +16,17 @@
 import logging
 
 import torch
+import trident
 import triton
 import triton.language as tl
 
 from flag_gems import runtime
 from flag_gems.runtime import torch_device_fn
-from flag_gems.utils import libentry, libtuner
+from flag_gems.utils import libtuner
 
 logger = logging.getLogger(__name__)
 
 
-@libentry()
 @libtuner(
     configs=runtime.get_tuned_config("linear"),
     key=["M", "N", "K"],
@@ -78,7 +78,7 @@ def linear_kernel(
 
     accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
 
-    for k in range(0, tl.cdiv(K, BLOCK_SIZE_K)):
+    for k in range(tl.cdiv(K, BLOCK_SIZE_K)):
         # Load input block
         input_mask_m = offs_m < M
         input_mask_k = offs_k < (K - k * BLOCK_SIZE_K)
@@ -122,6 +122,7 @@ def linear_kernel(
     tl.store(output_ptrs, output, mask=output_mask)
 
 
+@trident.jit
 def linear(input, weight, bias=None):
     """
     Applies a linear transformation to the incoming data: y = xA^T + b
