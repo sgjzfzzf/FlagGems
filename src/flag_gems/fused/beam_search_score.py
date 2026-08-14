@@ -25,7 +25,9 @@ from flag_gems.utils import pointwise_dynamic
 logger = logging.getLogger(__name__)
 
 
-@pointwise_dynamic(is_tensor=[True, True], promotion_methods=[(0, 1, "DEFAULT")])
+@pointwise_dynamic(
+    is_tensor=[True, True], promotion_methods=[(0, 1, "DEFAULT")], enable_trident=True
+)
 @triton.jit
 def beam_search_score_kernel(log_probs, beam_scores):
     # Beam Search Score: Add cumulative log probability with new token log probability

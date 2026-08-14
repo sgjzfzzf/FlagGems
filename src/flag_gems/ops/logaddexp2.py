@@ -22,7 +22,9 @@ from flag_gems.utils import pointwise_dynamic
 logger = logging.getLogger(__name__)
 
 
-@pointwise_dynamic(is_tensor=[True, True], promotion_methods=[(0, 1, "DEFAULT")])
+@pointwise_dynamic(
+    is_tensor=[True, True], promotion_methods=[(0, 1, "DEFAULT")], enable_trident=True
+)
 @triton.jit
 def logaddexp2_func(x, y):
     # log2(2**x + 2**y) = m + log2(1 + 2**(-|x - y|)), m = max(x, y)

@@ -23,20 +23,26 @@ logger = logging.getLogger(__name__)
 
 
 @pointwise_dynamic(
-    is_tensor=[True, False, False], promotion_methods=[(0, 1, 2, "DEFAULT")]
+    is_tensor=[True, False, False],
+    promotion_methods=[(0, 1, 2, "DEFAULT")],
+    enable_trident=True,
 )
 @triton.jit
 def clip_func(x, mini, maxi):
     return tl.minimum(maxi, tl.maximum(mini, x.to(tl.float32)))
 
 
-@pointwise_dynamic(is_tensor=[True, False], promotion_methods=[(0, 1, "DEFAULT")])
+@pointwise_dynamic(
+    is_tensor=[True, False], promotion_methods=[(0, 1, "DEFAULT")], enable_trident=True
+)
 @triton.jit
 def clip_func_min(x, mini):
     return tl.maximum(mini, x.to(tl.float32))
 
 
-@pointwise_dynamic(is_tensor=[True, False], promotion_methods=[(0, 1, "DEFAULT")])
+@pointwise_dynamic(
+    is_tensor=[True, False], promotion_methods=[(0, 1, "DEFAULT")], enable_trident=True
+)
 @triton.jit
 def clip_func_max(x, maxi):
     return tl.minimum(maxi, x.to(tl.float32))

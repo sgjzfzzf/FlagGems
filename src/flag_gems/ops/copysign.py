@@ -38,7 +38,9 @@ def _get_sign_bit_mask(num_bits):
     return 1 << (num_bits - 1)
 
 
-@pointwise_dynamic(is_tensor=[True, True], promotion_methods=[(0, 1, "DEFAULT")])
+@pointwise_dynamic(
+    is_tensor=[True, True], promotion_methods=[(0, 1, "DEFAULT")], enable_trident=True
+)
 @triton.jit
 def copysign_func(input, other):
     # Magnitude of input, sign of other

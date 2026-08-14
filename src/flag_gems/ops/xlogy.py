@@ -34,19 +34,31 @@ def _xlogy_compute(x, y):
     return tl.where(y_is_nan, float("nan"), res)
 
 
-@pointwise_dynamic(is_tensor=[True, True], promotion_methods=[(0, 1, "INT_TO_FLOAT")])
+@pointwise_dynamic(
+    is_tensor=[True, True],
+    promotion_methods=[(0, 1, "INT_TO_FLOAT")],
+    enable_trident=True,
+)
 @triton.jit
 def xlogy_func(x, y):
     return _xlogy_compute(x, y)
 
 
-@pointwise_dynamic(is_tensor=[True, False], promotion_methods=[(0, 1, "INT_TO_FLOAT")])
+@pointwise_dynamic(
+    is_tensor=[True, False],
+    promotion_methods=[(0, 1, "INT_TO_FLOAT")],
+    enable_trident=True,
+)
 @triton.jit
 def xlogy_func_tensor_scalar(x, y):
     return _xlogy_compute(x, y)
 
 
-@pointwise_dynamic(is_tensor=[False, True], promotion_methods=[(0, 1, "INT_TO_FLOAT")])
+@pointwise_dynamic(
+    is_tensor=[False, True],
+    promotion_methods=[(0, 1, "INT_TO_FLOAT")],
+    enable_trident=True,
+)
 @triton.jit
 def xlogy_func_scalar_tensor(x, y):
     return _xlogy_compute(x, y)

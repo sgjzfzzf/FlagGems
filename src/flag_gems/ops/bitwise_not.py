@@ -21,7 +21,7 @@ from flag_gems.utils import pointwise_dynamic
 logger = logging.getLogger(__name__)
 
 
-@pointwise_dynamic(promotion_methods=[(0, "DEFAULT")])
+@pointwise_dynamic(promotion_methods=[(0, "DEFAULT")], enable_trident=True)
 @triton.jit
 def bitwise_not_func(x):
     return ~x

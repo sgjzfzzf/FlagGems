@@ -23,7 +23,7 @@ from flag_gems.utils import pointwise_dynamic
 logger = logging.getLogger(__name__)
 
 
-@pointwise_dynamic(promotion_methods=[(0, "DEFAULT")])
+@pointwise_dynamic(promotion_methods=[(0, "DEFAULT")], enable_trident=True)
 @triton.jit
 def atanh_func(x):
     # atanh(x) = 0.5 * ln((1 + x) / (1 - x))

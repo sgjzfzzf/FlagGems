@@ -23,7 +23,7 @@ from flag_gems.utils.triton_lang_extension import div_rn
 logger = logging.getLogger(__name__)
 
 
-@pointwise_dynamic(promotion_methods=[(0, "DEFAULT")])
+@pointwise_dynamic(promotion_methods=[(0, "DEFAULT")], enable_trident=True)
 @triton.jit
 def silu_forward(x):
     x_fp32 = x.to(tl.float32)
@@ -31,7 +31,7 @@ def silu_forward(x):
     return y
 
 
-@pointwise_dynamic(promotion_methods=[(0, "DEFAULT")])
+@pointwise_dynamic(promotion_methods=[(0, "DEFAULT")], enable_trident=True)
 @triton.jit
 def silu_backward_kernel(x, dy):
     dy_fp32 = dy.to(tl.float32)

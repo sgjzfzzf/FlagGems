@@ -22,7 +22,7 @@ from flag_gems.utils import pointwise_dynamic
 logger = logging.getLogger(__name__)
 
 
-@pointwise_dynamic(promotion_methods=[(0, 1, "ALWAYS_BOOL")])
+@pointwise_dynamic(promotion_methods=[(0, 1, "ALWAYS_BOOL")], enable_trident=True)
 @triton.jit
 def logical_xor_func(x, y):
     return x.to(tl.int1) ^ y.to(tl.int1)

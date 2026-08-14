@@ -9,7 +9,9 @@ from flag_gems.utils import pointwise_dynamic
 logger = logging.getLogger(__name__)
 
 
-@pointwise_dynamic(is_tensor=[True, True], promotion_methods=[(0, 1, "DEFAULT")])
+@pointwise_dynamic(
+    is_tensor=[True, True], promotion_methods=[(0, 1, "DEFAULT")], enable_trident=True
+)
 @triton.jit
 def binary_cross_entropy_with_logits_kernel(x, y):
     # Stable formula:
@@ -25,7 +27,11 @@ def binary_cross_entropy_with_logits_kernel(x, y):
     )
 
 
-@pointwise_dynamic(is_tensor=[True, True, True], promotion_methods=[(0, 1, "DEFAULT")])
+@pointwise_dynamic(
+    is_tensor=[True, True, True],
+    promotion_methods=[(0, 1, "DEFAULT")],
+    enable_trident=True,
+)
 @triton.jit
 def binary_cross_entropy_with_logits_weight_kernel(x, y, weight):
     x_f32 = x.to(tl.float32)
@@ -39,7 +45,11 @@ def binary_cross_entropy_with_logits_weight_kernel(x, y, weight):
     return loss * w_f32
 
 
-@pointwise_dynamic(is_tensor=[True, True, True], promotion_methods=[(0, 1, "DEFAULT")])
+@pointwise_dynamic(
+    is_tensor=[True, True, True],
+    promotion_methods=[(0, 1, "DEFAULT")],
+    enable_trident=True,
+)
 @triton.jit
 def binary_cross_entropy_with_logits_pos_weight_kernel(x, y, pos_weight):
     x_f32 = x.to(tl.float32)
@@ -69,7 +79,9 @@ def binary_cross_entropy_with_logits_pos_weight_kernel(x, y, pos_weight):
 
 
 @pointwise_dynamic(
-    is_tensor=[True, True, True, True], promotion_methods=[(0, 1, "DEFAULT")]
+    is_tensor=[True, True, True, True],
+    promotion_methods=[(0, 1, "DEFAULT")],
+    enable_trident=True,
 )
 @triton.jit
 def binary_cross_entropy_with_logits_weight_pos_weight_kernel(x, y, weight, pos_weight):

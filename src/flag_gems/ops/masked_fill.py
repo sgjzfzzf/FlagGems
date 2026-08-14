@@ -23,7 +23,11 @@ from flag_gems.utils import broadcastable_to, pointwise_dynamic
 logger = logging.getLogger(__name__)
 
 
-@pointwise_dynamic(is_tensor=[True, True, False], promotion_methods=[(0, "NO_OPMATH")])
+@pointwise_dynamic(
+    is_tensor=[True, True, False],
+    promotion_methods=[(0, "NO_OPMATH")],
+    enable_trident=True,
+)
 @triton.jit
 def masked_fill_kernel(inp, expand_mask, value):
     inp = tl.where(expand_mask == 1, value, inp)

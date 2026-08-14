@@ -24,13 +24,13 @@ _tanh = tl_extra_shim.tanh
 logger = logging.getLogger(__name__)
 
 
-@pointwise_dynamic(promotion_methods=[(0, "INT_TO_FLOAT")])
+@pointwise_dynamic(promotion_methods=[(0, "INT_TO_FLOAT")], enable_trident=True)
 @triton.jit
 def tanh_kernel(x):
     return _tanh(x.to(tl.float32))
 
 
-@pointwise_dynamic(promotion_methods=[(0, "INT_TO_FLOAT")])
+@pointwise_dynamic(promotion_methods=[(0, "INT_TO_FLOAT")], enable_trident=True)
 @triton.jit
 def tanh_backward_kernel(y, dy):
     y = y.to(tl.float32)

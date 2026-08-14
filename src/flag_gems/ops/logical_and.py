@@ -22,7 +22,7 @@ from flag_gems.utils import pointwise_dynamic
 logger = logging.getLogger(__name__)
 
 
-@pointwise_dynamic(promotion_methods=[(0, 1, "ALWAYS_BOOL")])
+@pointwise_dynamic(promotion_methods=[(0, 1, "ALWAYS_BOOL")], enable_trident=True)
 @triton.jit
 def logical_and_func(x, y):
     return x.to(tl.int1).logical_and(y.to(tl.int1))
@@ -33,7 +33,7 @@ def logical_and(A, B):
     return logical_and_func(A, B)
 
 
-@pointwise_dynamic(promotion_methods=[(0, 1, "ALWAYS_BOOL")])
+@pointwise_dynamic(promotion_methods=[(0, 1, "ALWAYS_BOOL")], enable_trident=True)
 @triton.jit
 def logical_and_func_(x, y):
     return tl.where((x != 0) & (y != 0), 1, 0)

@@ -22,7 +22,7 @@ from flag_gems.utils import pointwise_dynamic
 logger = logging.getLogger(__name__)
 
 
-@pointwise_dynamic(promotion_methods=[(0, "ALWAYS_BOOL")])
+@pointwise_dynamic(promotion_methods=[(0, "ALWAYS_BOOL")], enable_trident=True)
 @triton.jit
 def signbit_func(x):
     if tl.constexpr(x.dtype.is_fp32()):

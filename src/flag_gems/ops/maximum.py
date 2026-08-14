@@ -24,7 +24,9 @@ logger = logging.getLogger(__name__)
 device = device.name
 
 
-@pointwise_dynamic(is_tensor=[True, True], promotion_methods=[(0, 1, "DEFAULT")])
+@pointwise_dynamic(
+    is_tensor=[True, True], promotion_methods=[(0, 1, "DEFAULT")], enable_trident=True
+)
 @triton.jit
 def maximum_kernel(X, Y):
     if X.dtype == tl.bfloat16:

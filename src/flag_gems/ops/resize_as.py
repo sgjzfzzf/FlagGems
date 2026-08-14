@@ -24,7 +24,9 @@ from flag_gems.utils import pointwise_dynamic
 logger = logging.getLogger(__name__)
 
 
-@pointwise_dynamic(is_tensor=[True], promotion_methods=[(0, "DEFAULT")])
+@pointwise_dynamic(
+    is_tensor=[True], promotion_methods=[(0, "DEFAULT")], enable_trident=True
+)
 @triton.jit
 def _resize_as_kernel(src):
     return src

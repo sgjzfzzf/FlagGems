@@ -24,7 +24,7 @@ from flag_gems.utils.triton_lang_extension import trunc
 logger = logging.getLogger(__name__)
 
 
-@pointwise_dynamic(promotion_methods=[(0, "DEFAULT")])
+@pointwise_dynamic(promotion_methods=[(0, "DEFAULT")], enable_trident=True)
 @triton.jit
 def frac_func(x):
     # frac(x) = x - trunc(x), where trunc(x) is truncation toward zero
