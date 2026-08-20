@@ -16,12 +16,13 @@ import logging
 import math
 
 import torch
+import trident
 import triton
 import triton.language as tl
 
 from flag_gems import runtime
 from flag_gems.runtime import torch_device_fn
-from flag_gems.utils import dim_compress, libentry, libtuner
+from flag_gems.utils import dim_compress, libtuner
 from flag_gems.utils import triton_lang_extension as ext
 
 logger = logging.getLogger(__name__)
@@ -36,7 +37,6 @@ def reduce_all(a, b):
     return a and b
 
 
-@libentry()
 @libtuner(
     configs=runtime.get_tuned_config("naive_reduction"),
     key=["M", "N"],
@@ -69,7 +69,6 @@ def all_kernel_dim(
     tl.store(out, all[:, None], row_mask)
 
 
-@libentry()
 @triton.jit
 def all_kernel_1(
     inp,
@@ -88,7 +87,6 @@ def all_kernel_1(
     tl.store(mid_ptr, all_val)
 
 
-@libentry()
 @triton.jit
 def all_kernel_2(mid, out, MID_SIZE, BLOCK_MID: tl.constexpr):
     offset = tl.arange(0, BLOCK_MID)
@@ -99,6 +97,7 @@ def all_kernel_2(mid, out, MID_SIZE, BLOCK_MID: tl.constexpr):
     tl.store(out, all_val)
 
 
+@trident.jit
 def all(inp):
     logger.debug("GEMS ALL")
     n_elements = inp.numel()
@@ -116,6 +115,7 @@ def all(inp):
     return out
 
 
+@trident.jit
 def all_dim(inp, dim=None, keepdim=False):
     logger.debug("GEMS ALL DIM")
     shape = list(inp.shape)
@@ -145,6 +145,7 @@ def all_dim(inp, dim=None, keepdim=False):
     return out
 
 
+@trident.jit
 def all_dims(inp, dim=None, keepdim=False):
     logger.debug("GEMS ALL DIMS")
 
