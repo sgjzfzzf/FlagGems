@@ -23,7 +23,7 @@ _acos = tl_extra_shim.acos
 logger = logging.getLogger(__name__)
 
 
-@pointwise_dynamic(promotion_methods=[(0, "INT_TO_FLOAT")])
+@pointwise_dynamic(promotion_methods=[(0, "INT_TO_FLOAT")], enable_trident=True)
 @triton.jit()
 def acos_kernel(x):
     # TODO: use flag_gems.utils.tl_extra_shim help apis

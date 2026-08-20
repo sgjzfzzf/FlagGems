@@ -24,7 +24,7 @@ from flag_gems.utils import pointwise_dynamic
 logger = logging.getLogger(__name__)
 
 
-@pointwise_dynamic(promotion_methods=[(0, "ALWAYS_BOOL")])
+@pointwise_dynamic(promotion_methods=[(0, "ALWAYS_BOOL")], enable_trident=True)
 @triton.jit
 def is_nonzero_func(x):
     return x != 0

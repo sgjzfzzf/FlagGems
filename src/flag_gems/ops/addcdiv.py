@@ -24,7 +24,9 @@ logger = logging.getLogger(__name__)
 
 
 @pointwise_dynamic(
-    is_tensor=[True, True, True, False], promotion_methods=[(0, 1, 2, "DEFAULT")]
+    is_tensor=[True, True, True, False],
+    promotion_methods=[(0, 1, 2, "DEFAULT")],
+    enable_trident=True,
 )
 @triton.jit
 def addcdiv_kernel(x, t1, t2, value):

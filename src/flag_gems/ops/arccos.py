@@ -23,7 +23,7 @@ from flag_gems.utils import pointwise_dynamic, tl_extra_shim
 logger = logging.getLogger(__name__)
 
 
-@pointwise_dynamic(promotion_methods=[(0, "INT_TO_FLOAT")])
+@pointwise_dynamic(promotion_methods=[(0, "INT_TO_FLOAT")], enable_trident=True)
 @triton.jit()
 def arccos_kernel(x):
     # TODO: use flag_gems.utils.tl_extra_shim help apis

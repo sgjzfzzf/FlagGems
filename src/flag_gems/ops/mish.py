@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 _tanh = tl_extra_shim.tanh
 
 
-@pointwise_dynamic(promotion_methods=[(0, "INT_TO_FLOAT")])
+@pointwise_dynamic(promotion_methods=[(0, "INT_TO_FLOAT")], enable_trident=True)
 @triton.jit
 def mish_func(x):
     # mish(x) = x * tanh(softplus(x)) = x * tanh(ln(1 + e^x))

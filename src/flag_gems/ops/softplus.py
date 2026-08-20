@@ -22,7 +22,11 @@ from flag_gems.utils import pointwise_dynamic
 logger = logging.getLogger(__name__)
 
 
-@pointwise_dynamic(is_tensor=[True, False, False], promotion_methods=[(0, "DEFAULT")])
+@pointwise_dynamic(
+    is_tensor=[True, False, False],
+    promotion_methods=[(0, "DEFAULT")],
+    enable_trident=True,
+)
 @triton.jit
 def softplus_forward(x, beta, threshold):
     x_fp = x.to(tl.float32)
@@ -33,7 +37,9 @@ def softplus_forward(x, beta, threshold):
 
 
 @pointwise_dynamic(
-    is_tensor=[True, True, False, False], promotion_methods=[(0, 1, "DEFAULT")]
+    is_tensor=[True, True, False, False],
+    promotion_methods=[(0, 1, "DEFAULT")],
+    enable_trident=True,
 )
 @triton.jit
 def softplus_backward_kernel(grad_output, x, beta, threshold):

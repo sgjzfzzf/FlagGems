@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # (the naive x + sqrt(x^2+1) form evaluates to -inf + inf = NaN).
 # Uses float32 intermediate for numerical precision.
 # INT_TO_FLOAT promotion handles integer input tensors.
-@pointwise_dynamic(promotion_methods=[(0, "INT_TO_FLOAT")])
+@pointwise_dynamic(promotion_methods=[(0, "INT_TO_FLOAT")], enable_trident=True)
 @triton.jit
 def asinh_func(x):
     x_fp32 = x.to(tl.float32)

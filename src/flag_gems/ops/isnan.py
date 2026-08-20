@@ -24,7 +24,7 @@ _isnan = tl_extra_shim.isnan
 logger = logging.getLogger(__name__)
 
 
-@pointwise_dynamic(promotion_methods=[(0, "ALWAYS_BOOL")])
+@pointwise_dynamic(promotion_methods=[(0, "ALWAYS_BOOL")], enable_trident=True)
 @triton.jit
 def isnan_func(x):
     return _isnan(x.to(tl.float32))

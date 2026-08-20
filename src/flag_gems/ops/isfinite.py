@@ -28,7 +28,9 @@ except Exception:
 logger = logging.getLogger(__name__)
 
 
-@pointwise_dynamic(is_tensor=[True], promotion_methods=[(0, "ALWAYS_BOOL")])
+@pointwise_dynamic(
+    is_tensor=[True], promotion_methods=[(0, "ALWAYS_BOOL")], enable_trident=True
+)
 @triton.jit
 def isfinite_func(x):
     return _isfinited(x) if x.dtype.is_fp64() else _finitef(x.to(tl.float32))

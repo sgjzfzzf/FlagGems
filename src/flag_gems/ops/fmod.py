@@ -23,7 +23,7 @@ from flag_gems.utils.triton_lang_extension import fmod as _fmod
 logger = logging.getLogger(__name__)
 
 
-@pointwise_dynamic(promotion_methods=[(0, 1, "DEFAULT")])
+@pointwise_dynamic(promotion_methods=[(0, 1, "DEFAULT")], enable_trident=True)
 @triton.jit
 def fmod_func(x, y):
     # Convert to float32 for computation to avoid libdevice float16/bfloat16 issues
@@ -34,7 +34,9 @@ def fmod_func(x, y):
     return result.to(dtype)
 
 
-@pointwise_dynamic(is_tensor=[True, False], promotion_methods=[(0, 1, "DEFAULT")])
+@pointwise_dynamic(
+    is_tensor=[True, False], promotion_methods=[(0, 1, "DEFAULT")], enable_trident=True
+)
 @triton.jit
 def fmod_func_tensor_scalar(x, y):
     # Convert to float32 for computation to avoid libdevice float16/bfloat16 issues

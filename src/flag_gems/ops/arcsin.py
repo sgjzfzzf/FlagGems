@@ -24,7 +24,7 @@ _ASIN = tl_extra_shim.asin
 logger = logging.getLogger(__name__)
 
 
-@pointwise_dynamic(promotion_methods=[(0, "INT_TO_FLOAT")])
+@pointwise_dynamic(promotion_methods=[(0, "INT_TO_FLOAT")], enable_trident=True)
 @triton.jit()
 def arcsin_kernel(x):
     # Match torch.arcsin by evaluating in float32 before casting back.

@@ -35,6 +35,7 @@ _FLOAT8_E8M0FNU = getattr(torch, "float8_e8m0fnu", None)
         True,
     ],
     promotion_methods=[(0, "DEFAULT")],
+    enable_trident=True,
 )
 @triton.jit
 def _to_copy_func(x):

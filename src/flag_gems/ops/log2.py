@@ -23,7 +23,7 @@ from flag_gems.utils import pointwise_dynamic
 logger = logging.getLogger(__name__)
 
 
-@pointwise_dynamic(promotion_methods=[(0, "COMPLEX_TO_FLOAT")])
+@pointwise_dynamic(promotion_methods=[(0, "COMPLEX_TO_FLOAT")], enable_trident=True)
 @triton.jit
 def log2_func(x):
     return tl.log2(x.to(tl.float32))

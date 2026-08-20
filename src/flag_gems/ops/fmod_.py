@@ -38,21 +38,25 @@ def _fmod(x, y):
     return x - y * quotient
 
 
-@pointwise_dynamic(promotion_methods=[(0, 1, "DEFAULT")])
+@pointwise_dynamic(promotion_methods=[(0, 1, "DEFAULT")], enable_trident=True)
 @triton.jit
 def fmod_tt(x, y):
     """fmod for tensor-tensor"""
     return _fmod(x, y)
 
 
-@pointwise_dynamic(is_tensor=[True, False], promotion_methods=[(0, 1, "DEFAULT")])
+@pointwise_dynamic(
+    is_tensor=[True, False], promotion_methods=[(0, 1, "DEFAULT")], enable_trident=True
+)
 @triton.jit
 def fmod_ts(x, y):
     """fmod for tensor-scalar"""
     return _fmod(x, y)
 
 
-@pointwise_dynamic(is_tensor=[False, True], promotion_methods=[(0, 1, "DEFAULT")])
+@pointwise_dynamic(
+    is_tensor=[False, True], promotion_methods=[(0, 1, "DEFAULT")], enable_trident=True
+)
 @triton.jit
 def fmod_st(x, y):
     """fmod for scalar-tensor"""

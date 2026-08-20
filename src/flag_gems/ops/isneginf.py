@@ -22,7 +22,7 @@ from flag_gems.utils import pointwise_dynamic, tl_extra_shim
 logger = logging.getLogger(__name__)
 
 
-@pointwise_dynamic(promotion_methods=[(0, "ALWAYS_BOOL")])
+@pointwise_dynamic(promotion_methods=[(0, "ALWAYS_BOOL")], enable_trident=True)
 @triton.jit
 def isneginf_func(x):
     x_fp32 = x.to(tl.float32)

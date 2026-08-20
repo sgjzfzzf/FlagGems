@@ -28,7 +28,7 @@ tanh = tl_extra_shim.tanh
 logger = logging.getLogger(__name__)
 
 
-@pointwise_dynamic(promotion_methods=[(0, "DEFAULT")])
+@pointwise_dynamic(promotion_methods=[(0, "DEFAULT")], enable_trident=True)
 @triton.jit
 def gelu_none(x):
     scale: tl.constexpr = 0.7071067811  # 1 / math.sqrt(2)
@@ -36,7 +36,7 @@ def gelu_none(x):
     return output
 
 
-@pointwise_dynamic(promotion_methods=[(0, "DEFAULT")])
+@pointwise_dynamic(promotion_methods=[(0, "DEFAULT")], enable_trident=True)
 @triton.jit
 def gelu_tanh(x):
     x_fp32 = x.to(tl.float32)
@@ -44,7 +44,7 @@ def gelu_tanh(x):
     return output
 
 
-@pointwise_dynamic(promotion_methods=[(0, 1, "DEFAULT")])
+@pointwise_dynamic(promotion_methods=[(0, 1, "DEFAULT")], enable_trident=True)
 @triton.jit
 def gelu_backward_none(x, dy):
     scale1: tl.constexpr = 0.7071067811  # 1 / math.sqrt(2)
@@ -59,7 +59,7 @@ def gelu_backward_none(x, dy):
     return dx
 
 
-@pointwise_dynamic(promotion_methods=[(0, 1, "DEFAULT")])
+@pointwise_dynamic(promotion_methods=[(0, 1, "DEFAULT")], enable_trident=True)
 @triton.jit
 def gelu_backward_tanh(x, dy):
     x_fp32 = x.to(tl.float32)

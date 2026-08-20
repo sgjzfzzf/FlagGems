@@ -23,7 +23,7 @@ from flag_gems.utils import pointwise_dynamic
 logger = logging.getLogger(__name__)
 
 
-@pointwise_dynamic(promotion_methods=[(0, 1, "DEFAULT")])
+@pointwise_dynamic(promotion_methods=[(0, 1, "DEFAULT")], enable_trident=True)
 @triton.jit
 def xlog1py_func(x, y):
     # xlog1py(x, y) = x * log1p(y) = x * log(1 + y)

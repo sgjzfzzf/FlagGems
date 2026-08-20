@@ -24,7 +24,7 @@ _isinf = tl_extra_shim.isinf
 logger = logging.getLogger(__name__)
 
 
-@pointwise_dynamic(promotion_methods=[(0, "ALWAYS_BOOL")])
+@pointwise_dynamic(promotion_methods=[(0, "ALWAYS_BOOL")], enable_trident=True)
 @triton.jit
 def isinf_func(x):
     return _isinf(x.to(tl.float32))
