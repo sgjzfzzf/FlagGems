@@ -15,6 +15,7 @@
 import logging
 
 import torch
+import trident
 import triton
 
 from flag_gems.ops.zeros import zeros_kernel
@@ -23,6 +24,7 @@ from flag_gems.runtime import torch_device_fn
 logger = logging.getLogger(__name__)
 
 
+@trident.jit
 def zeros_like(
     x, *, dtype=None, layout=None, device=None, pin_memory=None, memory_format=None
 ):
