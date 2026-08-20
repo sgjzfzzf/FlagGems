@@ -15,18 +15,17 @@
 import logging
 
 import torch
+import trident
 import triton
 import triton.language as tl
 
 from flag_gems import runtime
 from flag_gems.runtime import torch_device_fn
-from flag_gems.utils import libentry
 from flag_gems.utils import triton_lang_extension as ext
 
 logger = logging.getLogger(__name__)
 
 
-@libentry()
 @triton.autotune(configs=runtime.get_tuned_config("triu"), key=["M", "N"])
 @triton.jit(do_not_specialize=["diagonal"])
 def triu_kernel(
@@ -54,7 +53,6 @@ def triu_kernel(
         tl.store(Y + cols, y, mask=mask)
 
 
-@libentry()
 @triton.autotune(
     configs=runtime.get_tuned_config("triu_batch"),
     key=["batch", "MN", "N", "diagonal"],
@@ -120,6 +118,7 @@ def _check_batch_contiguous(tensor, allow_zero_stride=True):
     return True, tensor
 
 
+@trident.jit
 def triu(A, diagonal=0):
     logger.debug("GEMS TRIU")
 
