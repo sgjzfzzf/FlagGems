@@ -15,6 +15,7 @@
 import logging
 
 import torch
+import trident
 import triton
 import triton.language as tl
 
@@ -25,7 +26,6 @@ from flag_gems.utils import triton_lang_extension as ext
 logger = logging.getLogger(__name__)
 
 
-@libentry()
 @triton.jit
 def embedding_kernel(
     out_ptr,  # pointer to the output
@@ -124,6 +124,7 @@ def embedding_grad_scale_kernel(
         tl.store(grad_out + row_idx * N + cols, scaled_embedding_grad, mask=mask)
 
 
+@trident.jit
 def embedding(weight, indices, padding_idx=-1, scale_grad_by_freq=False, sparse=False):
     logger.debug("GEMS EMBEDDING FORWARD")
     assert not sparse, "Currently do not support sparse format"
