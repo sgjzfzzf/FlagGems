@@ -15,17 +15,17 @@
 import logging
 
 import torch
+import trident
 import triton
 import triton.language as tl
 
 from flag_gems import runtime
-from flag_gems.utils import dim_compress, libentry
+from flag_gems.utils import dim_compress
 from flag_gems.utils import triton_lang_extension as ext
 
 logger = logging.getLogger(__name__)
 
 
-@libentry()
 @triton.heuristics(runtime.get_heuristic_config("index_select"))
 @triton.jit
 def index_select_kernel(
@@ -52,6 +52,7 @@ def index_select_kernel(
     tl.store(out + out_off, selected, mask=final_mask)
 
 
+@trident.jit
 def index_select(inp, dim, index):
     logger.debug("GEMS INDEX SELECT")
     assert dim >= -inp.ndim and dim < inp.ndim, "Invalid dim"

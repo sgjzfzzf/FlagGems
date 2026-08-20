@@ -17,6 +17,7 @@ import logging
 import math
 
 import torch
+import trident
 import triton
 import triton.language as tl
 from torch._prims_common import is_boolean_dtype, is_integer_dtype
@@ -44,7 +45,6 @@ def get_scan_accum_type(inp_dtype: tl.dtype) -> tl.dtype:
         return inp_dtype
 
 
-@libentry()
 @triton.jit(do_not_specialize=["n_elements", "part_num"])
 def scan_part_sum_kernel(
     inp,
@@ -80,7 +80,6 @@ def scan_part_sum_kernel(
     tl.store(partial_sum_ptrs, part_sum_via_sum)
 
 
-@libentry()
 @triton.jit(do_not_specialize=["n_elements", "part_num"])
 def add_base_sum_kernel(
     out,
@@ -104,7 +103,6 @@ def add_base_sum_kernel(
         tl.store(out_ptrs, final_vals.to(out_vals.dtype), mask=mask)
 
 
-@libentry()
 @triton.jit(do_not_specialize=["part_num"])
 def scan_part_sum_abc_kernel(
     inp,
@@ -150,7 +148,6 @@ def scan_part_sum_abc_kernel(
     tl.store(partial_sum_ptrs, part_sum_via_sum)
 
 
-@libentry()
 @triton.jit(do_not_specialize=["part_num"])
 def add_base_sum_abc_kernel(
     out,
@@ -381,11 +378,13 @@ def reduce_then_scan_block_scan_kernel_row(
         )
 
 
+@trident.jit
 def cumsum(inp, dim=1, *, dtype=None):
     logger.debug("GEMS CUMSUM")
     return cumsum_wrapper(inp, dim, dtype)
 
 
+@trident.jit
 def cumsum_out(inp, dim=1, *, dtype=None, out):
     logger.debug("GEMS CUMSUM_OUT")
     return cumsum_wrapper(inp, dim, dtype, out)
