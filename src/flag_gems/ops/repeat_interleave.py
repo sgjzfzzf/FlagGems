@@ -21,12 +21,13 @@ from triton import language as tl
 from flag_gems.utils import triton_lang_extension as ext
 from flag_gems.utils.pointwise_dynamic import pointwise_dynamic
 from flag_gems.utils.shape_utils import c_contiguous_stride
-from flag_gems.utils.tensor_wrapper import StridedBuffer
 
 logger = logging.getLogger(__name__)
 
 
-@pointwise_dynamic(num_inputs=1, promotion_methods=[(0, "DEFAULT")])
+@pointwise_dynamic(
+    num_inputs=1, promotion_methods=[(0, "DEFAULT")], enable_trident=True
+)
 @triton.jit
 def copy_func(x):
     return x
@@ -69,10 +70,13 @@ def repeat_interleave_self_int(inp, repeats, dim=None, *, output_size=None):
     out_view_shape = inp_shape[: dim + 1] + [repeats] + inp_shape[dim + 1 :]
     out_view_stride = c_contiguous_stride(out_view_shape)
 
-    in_view = StridedBuffer(inp, out_view_shape, in_view_stride)
-    out_view = StridedBuffer(output, out_view_shape, out_view_stride)
-    ndim = len(out_view_shape)
-    copy_func.instantiate(ndim)(in_view, out0=out_view)
+    in_view = inp.as_strided(
+        out_view_shape, in_view_stride, storage_offset=inp.storage_offset()
+    )
+    out_view = output.as_strided(
+        out_view_shape, out_view_stride, storage_offset=output.storage_offset()
+    )
+    copy_func(in_view, out0=out_view)
     return output
 
 
