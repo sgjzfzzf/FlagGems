@@ -15,6 +15,7 @@
 import logging
 
 import torch
+import trident
 import triton
 import triton.language as tl
 
@@ -826,6 +827,7 @@ def _launch_tril(input: torch.Tensor, out: torch.Tensor, diagonal: int):
     )
 
 
+@trident.jit
 def tril(input: torch.Tensor, diagonal: int = 0):
     logger.debug("GEMS TRIL")
     _check_input(input)
