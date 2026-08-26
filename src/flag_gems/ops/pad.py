@@ -80,11 +80,11 @@ def output_ref_for_wrapper() -> str:
 def generate_imports(code: IndentedBuffer) -> IndentedBuffer:
     code.writeline("import math")
     code.writeline("import torch")
+    code.writeline("import trident")
     code.writeline("import triton")
     code.writeline("from triton import language as tl")
     code.newline()
     code.writeline("from flag_gems import runtime")
-    code.writeline("from flag_gems.utils.libentry import libentry")
     code.writeline("from flag_gems.runtime import torch_device_fn")
     code.writeline("from flag_gems.utils import triton_lang_extension as ext")
     code.writeline("from flag_gems.utils.type_utils import type_promotion")
@@ -101,6 +101,7 @@ def generate_functional_padding_wrapper(
     # wrapper signature
     parameters: str = parameter_for_wrapper()
     wrapper_signature: str = f"def {wrapper_name}({parameters}):"
+    code.writeline("@trident.jit")
     code.writeline(wrapper_signature)
 
     with code.indent():
@@ -248,7 +249,6 @@ def generate_pad_kernel(
     code.newline()
 
     # the decorators
-    code.writeline("@libentry()")
     non_specialize_arg_names = ["value"]
     code.writeline(f"@triton.jit(do_not_specialize={non_specialize_arg_names})")
 
