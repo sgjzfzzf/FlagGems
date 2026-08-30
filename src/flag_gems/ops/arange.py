@@ -16,17 +16,16 @@ import logging
 import math
 
 import torch
+import trident
 import triton
 import triton.language as tl
 
 from flag_gems import runtime
-from flag_gems.utils import libentry
 from flag_gems.utils import triton_lang_extension as ext
 
 logger = logging.getLogger(__name__)
 
 
-@libentry()
 @triton.jit
 def arange_func(y_ptr, start, end, step, size, BLOCK_SIZE: tl.constexpr):
     pid = ext.program_id(0)
@@ -39,6 +38,7 @@ def arange_func(y_ptr, start, end, step, size, BLOCK_SIZE: tl.constexpr):
     tl.store(y_ptr + cols, arange_val, mask=mask < size)
 
 
+@trident.jit
 def arange_start(
     start, end, step=1, *, dtype=None, layout=None, device=None, pin_memory=None
 ):
