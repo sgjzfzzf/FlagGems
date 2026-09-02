@@ -101,7 +101,7 @@ def generate_functional_padding_wrapper(
     # wrapper signature
     parameters: str = parameter_for_wrapper()
     wrapper_signature: str = f"def {wrapper_name}({parameters}):"
-    code.writeline("@trident.jit")
+    code.writeline("@trident.jit(dynamic=False)")
     code.writeline(wrapper_signature)
 
     with code.indent():

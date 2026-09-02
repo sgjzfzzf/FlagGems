@@ -1056,7 +1056,10 @@ class WrapperGenerator:
 
     def codegen_nd_tile(self, code):
         if self.config.enable_trident_jit:
-            code.writeline("@trident.jit")
+            decorator = "@trident.jit"
+            if not self.config.trident_dynamic:
+                decorator += "(dynamic=False)"
+            code.writeline(decorator)
         self.gen_signature(code)
 
         with code.indent():
@@ -1070,7 +1073,10 @@ class WrapperGenerator:
 
     def codegen_1d_tile(self, code):
         if self.config.enable_trident_jit:
-            code.writeline("@trident.jit")
+            decorator = "@trident.jit"
+            if not self.config.trident_dynamic:
+                decorator += "(dynamic=False)"
+            code.writeline(decorator)
         self.gen_signature(code)
 
         with code.indent():
@@ -1819,6 +1825,7 @@ def pointwise_dynamic(
     promotion_methods: Optional[Tuple[int, ...]] = None,
     config: Optional[CodeGenConfig] = None,
     enable_trident: bool = False,
+    dynamic: bool = True,
 ):
     def decorator(fn):
         nonlocal num_inputs
@@ -1831,7 +1838,9 @@ def pointwise_dynamic(
             num_outputs=num_outputs,
             promotion_methods=promotion_methods,
         )
-        return PointwiseDynamicFunction(op_desc, fn, config, enable_trident)
+        result = PointwiseDynamicFunction(op_desc, fn, config, enable_trident)
+        result.config.trident_dynamic = dynamic
+        return result
 
     if f is not None:
         return decorator(f)

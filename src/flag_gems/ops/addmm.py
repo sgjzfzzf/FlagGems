@@ -21,7 +21,7 @@ import triton.language as tl
 
 from flag_gems import runtime
 from flag_gems.runtime import torch_device_fn
-from flag_gems.utils import broadcastable_to, libentry, libtuner
+from flag_gems.utils import broadcastable_to
 from flag_gems.utils import triton_lang_extension as ext
 
 logger = logging.getLogger(__name__)
@@ -40,14 +40,9 @@ def _accumulate_dot(
     return accumulator + tl.dot(a, b, allow_tf32=False)
 
 
-@libentry()
-@libtuner(
+@triton.autotune(
     configs=runtime.get_tuned_config("addmm"),
     key=["M", "N", "K", "stride_am", "stride_bk"],
-    strategy=["align32", "align32", "align32", "align32", "align32"],
-    warmup=5,
-    rep=10,
-    flagtune_op_name="addmm",
 )
 @triton.jit(do_not_specialize=["alpha", "beta"])
 def addmm_kernel(
@@ -194,7 +189,7 @@ def _addmm_impl(bias, mat1, mat2, out, beta, alpha):
     return out
 
 
-@trident.jit
+@trident.jit(dynamic=False)
 def addmm(bias, mat1, mat2, *, beta=1, alpha=1):
     logger.debug(
         "GEMS ADDMM, [shape info]: [-, %s, %s, %s](batch, M, N, K), "
@@ -209,7 +204,7 @@ def addmm(bias, mat1, mat2, *, beta=1, alpha=1):
     return _addmm_impl(bias, mat1, mat2, None, beta, alpha)
 
 
-@trident.jit
+@trident.jit(dynamic=False)
 def addmm_out(bias, mat1, mat2, *, beta=1, alpha=1, out=None):
     logger.debug(
         "GEMS ADDMM_OUT, [shape info]: [-, %s, %s, %s](batch, M, N, K), "

@@ -22,7 +22,11 @@ from flag_gems.utils import pointwise_dynamic
 logger = logging.getLogger(__name__)
 
 
-@pointwise_dynamic(promotion_methods=[(0, "COMPLEX_TO_FLOAT")], enable_trident=True)
+@pointwise_dynamic(
+    promotion_methods=[(0, "COMPLEX_TO_FLOAT")],
+    enable_trident=True,
+    dynamic=False,
+)
 @triton.jit
 def abs_func(x):
     return tl.abs(x)
