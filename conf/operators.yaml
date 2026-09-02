@@ -3249,6 +3249,18 @@ ops:
   stages:
   - stable: '2.0'
   - removed: '3.0'
+- id: ctc_loss
+  description: Connectionist Temporal Classification loss for sequence-to-sequence models.
+  for:
+    - ctc_loss.IntList
+    - ctc_loss.Tensor
+  labels:
+    - aten
+    - KernelGen
+  kind:
+    - NeuralNetwork
+  stages:
+    - alpha: '5.4'
 - id: cudnn_attention_forward
   description: 'Forward kernel for cuDNN attention, computing scaled dot-product
 
