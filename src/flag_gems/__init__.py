@@ -1027,6 +1027,7 @@ _FULL_CONFIG = (
     ("sinc_", sinc_),
     ("sinh", sinh),
     ("sinh_", sinh_),
+    ("slice.Tensor", slice),
     ("slice_backward", slice_backward),
     ("slice_scatter", slice_scatter),
     ("smooth_l1_loss", smooth_l1_loss),
