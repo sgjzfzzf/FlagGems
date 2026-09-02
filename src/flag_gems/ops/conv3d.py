@@ -227,7 +227,7 @@ def conv3d_forward_kernel(
     tl.store(output_pointer, accum, mask=output_mask)
 
 
-@trident.jit
+@trident.jit(dynamic=False)
 def _conv3d_forward_impl(
     input_pointer,
     weight_pointer,

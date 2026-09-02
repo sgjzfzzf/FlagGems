@@ -23,7 +23,11 @@ logger = logging.getLogger(__name__)
 exp2 = tl_extra_shim.exp2
 
 
-@pointwise_dynamic(promotion_methods=[(0, "INT_TO_FLOAT")], enable_trident=True)
+@pointwise_dynamic(
+    promotion_methods=[(0, "INT_TO_FLOAT")],
+    enable_trident=True,
+    dynamic=False,
+)
 @triton.jit
 def sigmoid_forward(x):
     # log2e: tl.constexpr = math.log2(math.e)
@@ -33,7 +37,11 @@ def sigmoid_forward(x):
     return 1 / (1 + exp2(-x.to(tl.float32) * log2e))
 
 
-@pointwise_dynamic(promotion_methods=[(0, "INT_TO_FLOAT")], enable_trident=True)
+@pointwise_dynamic(
+    promotion_methods=[(0, "INT_TO_FLOAT")],
+    enable_trident=True,
+    dynamic=False,
+)
 @triton.jit
 def sigmoid_backward_kernel(dy, y):
     y_f32 = y.to(tl.float32)
