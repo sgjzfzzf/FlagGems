@@ -124,7 +124,7 @@ def embedding_grad_scale_kernel(
         tl.store(grad_out + row_idx * N + cols, scaled_embedding_grad, mask=mask)
 
 
-@trident.jit(dynamic=False)
+@trident.jit
 def embedding(weight, indices, padding_idx=-1, scale_grad_by_freq=False, sparse=False):
     logger.debug("GEMS EMBEDDING FORWARD")
     assert not sparse, "Currently do not support sparse format"

@@ -346,7 +346,7 @@ def conv2d_backward_kernel_weight(
     tl.store(weight_pointer, accum, weight_mask)
 
 
-@trident.jit(dynamic=False)
+@trident.jit
 def _conv2d_forward_impl(
     input_pointer,
     weight_pointer,
@@ -455,7 +455,7 @@ def _conv2d_forward_impl(
     return output
 
 
-@trident.jit(dynamic=False)
+@trident.jit
 def _conv2d_backward_impl(
     weight,
     input,

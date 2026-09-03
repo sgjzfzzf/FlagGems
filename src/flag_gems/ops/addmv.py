@@ -82,7 +82,7 @@ def addmv_kernel(
     tl.store(Out_ptrs, out_block, mask=n_mask)
 
 
-@trident.jit(dynamic=False)
+@trident.jit
 def addmv(bias, mat, vec, *, beta=1, alpha=1):
     logger.debug("GEMS ADDMV")
     assert mat.shape[1] == vec.shape[0], "incompatible dimensions"
@@ -110,7 +110,7 @@ def addmv(bias, mat, vec, *, beta=1, alpha=1):
     return out
 
 
-@trident.jit(dynamic=False)
+@trident.jit
 def addmv_out(bias, mat, vec, *, beta=1, alpha=1, out=None):
     logger.debug("GEMS ADDMV OUT")
     assert mat.shape[1] == vec.shape[0], "incompatible dimensions"

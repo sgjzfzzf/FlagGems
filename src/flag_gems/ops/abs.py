@@ -25,7 +25,6 @@ logger = logging.getLogger(__name__)
 @pointwise_dynamic(
     promotion_methods=[(0, "COMPLEX_TO_FLOAT")],
     enable_trident=True,
-    dynamic=False,
 )
 @triton.jit
 def abs_func(x):

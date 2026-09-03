@@ -27,7 +27,6 @@ logger = logging.getLogger(__name__)
     is_tensor=[True, True, False],
     promotion_methods=[(0, 1, "DEFAULT")],
     enable_trident=True,
-    dynamic=False,
 )
 @triton.jit
 def add_func(x, y, alpha):
@@ -38,7 +37,6 @@ def add_func(x, y, alpha):
     is_tensor=[True, False, False],
     promotion_methods=[(0, 1, "DEFAULT")],
     enable_trident=True,
-    dynamic=False,
 )
 @triton.jit
 def add_func_tensor_scalar(x, y, alpha):
@@ -49,7 +47,6 @@ def add_func_tensor_scalar(x, y, alpha):
     is_tensor=[False, True, False],
     promotion_methods=[(0, 1, "DEFAULT")],
     enable_trident=True,
-    dynamic=False,
 )
 @triton.jit
 def add_func_scalar_tensor(x, y, alpha):

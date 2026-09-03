@@ -213,7 +213,7 @@ def conv_transpose1d_forward_kernel(
     tl.store(output_ptr, accum, mask=output_mask)
 
 
-@trident.jit(dynamic=False)
+@trident.jit
 def _conv_transpose1d_forward_impl(
     input_pointer,
     weight_pointer,

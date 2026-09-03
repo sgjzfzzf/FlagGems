@@ -189,7 +189,7 @@ def _addmm_impl(bias, mat1, mat2, out, beta, alpha):
     return out
 
 
-@trident.jit(dynamic=False)
+@trident.jit
 def addmm(bias, mat1, mat2, *, beta=1, alpha=1):
     logger.debug(
         "GEMS ADDMM, [shape info]: [-, %s, %s, %s](batch, M, N, K), "
@@ -204,7 +204,7 @@ def addmm(bias, mat1, mat2, *, beta=1, alpha=1):
     return _addmm_impl(bias, mat1, mat2, None, beta, alpha)
 
 
-@trident.jit(dynamic=False)
+@trident.jit
 def addmm_out(bias, mat1, mat2, *, beta=1, alpha=1, out=None):
     logger.debug(
         "GEMS ADDMM_OUT, [shape info]: [-, %s, %s, %s](batch, M, N, K), "

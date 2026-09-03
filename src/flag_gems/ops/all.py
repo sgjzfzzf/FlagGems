@@ -97,7 +97,7 @@ def all_kernel_2(mid, out, MID_SIZE, BLOCK_MID: tl.constexpr):
     tl.store(out, all_val)
 
 
-@trident.jit(dynamic=False)
+@trident.jit
 def all(inp):
     logger.debug("GEMS ALL")
     n_elements = inp.numel()
@@ -115,7 +115,7 @@ def all(inp):
     return out
 
 
-@trident.jit(dynamic=False)
+@trident.jit
 def all_dim(inp, dim=None, keepdim=False):
     logger.debug("GEMS ALL DIM")
     shape = list(inp.shape)
@@ -145,7 +145,7 @@ def all_dim(inp, dim=None, keepdim=False):
     return out
 
 
-@trident.jit(dynamic=False)
+@trident.jit
 def all_dims(inp, dim=None, keepdim=False):
     logger.debug("GEMS ALL DIMS")
 
