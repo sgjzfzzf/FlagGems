@@ -378,13 +378,13 @@ def reduce_then_scan_block_scan_kernel_row(
         )
 
 
-@trident.jit(dynamic=False)
+@trident.jit
 def cumsum(inp, dim=1, *, dtype=None):
     logger.debug("GEMS CUMSUM")
     return cumsum_wrapper(inp, dim, dtype)
 
 
-@trident.jit(dynamic=False)
+@trident.jit
 def cumsum_out(inp, dim=1, *, dtype=None, out):
     logger.debug("GEMS CUMSUM_OUT")
     return cumsum_wrapper(inp, dim, dtype, out)

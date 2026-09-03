@@ -154,7 +154,7 @@ def bmm_kernel(
     tl.store(o_ptrs, o, mask_c)
 
 
-@trident.jit(dynamic=False)
+@trident.jit
 def bmm(A, B):
     logger.debug("GEMS BMM")
     assert A.shape[0] == B.shape[0], "Batch dim mismatch"
@@ -190,7 +190,7 @@ def bmm(A, B):
     return out
 
 
-@trident.jit(dynamic=False)
+@trident.jit
 def bmm_out(A, B, out):
     logger.debug("GEMS BMM_OUT")
     assert A.shape[0] == B.shape[0] == out.shape[0], "Batch dim mismatch"

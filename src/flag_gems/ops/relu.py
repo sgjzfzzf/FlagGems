@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 @pointwise_dynamic(
-    promotion_methods=[(0, "DEFAULT")], enable_trident=True, dynamic=False
+    promotion_methods=[(0, "DEFAULT")], enable_trident=True
 )
 @triton.jit
 def relu_forward(x):
@@ -31,7 +31,7 @@ def relu_forward(x):
 
 
 @pointwise_dynamic(
-    promotion_methods=[(0, "DEFAULT")], enable_trident=True, dynamic=False
+    promotion_methods=[(0, "DEFAULT")], enable_trident=True
 )
 @triton.jit
 def relu_backward(x, dy):

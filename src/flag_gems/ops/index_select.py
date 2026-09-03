@@ -52,7 +52,7 @@ def index_select_kernel(
     tl.store(out + out_off, selected, mask=final_mask)
 
 
-@trident.jit(dynamic=False)
+@trident.jit
 def index_select(inp, dim, index):
     logger.debug("GEMS INDEX SELECT")
     assert dim >= -inp.ndim and dim < inp.ndim, "Invalid dim"
