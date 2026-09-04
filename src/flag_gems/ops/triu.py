@@ -118,7 +118,7 @@ def _check_batch_contiguous(tensor, allow_zero_stride=True):
     return True, tensor
 
 
-@trident.jit
+@trident.jit(dynamic=False)
 def triu(A, diagonal=0):
     logger.debug("GEMS TRIU")
 

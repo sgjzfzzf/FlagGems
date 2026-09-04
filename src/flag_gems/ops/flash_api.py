@@ -269,7 +269,7 @@ def round_multiple(x, m):
     return (x + m - 1) // m * m
 
 
-@trident.jit
+@trident.jit(dynamic=False)
 def _flash_varlan_fwd_launch(
     q_ptr,
     k_ptr,
@@ -973,7 +973,7 @@ def mha_varlan_fwd_opt(
     return out, q, k, v, lse, philox_args, unused, p
 
 
-@trident.jit
+@trident.jit(dynamic=False)
 def _mha_fwd_launch(
     q_ptr,
     k_ptr,

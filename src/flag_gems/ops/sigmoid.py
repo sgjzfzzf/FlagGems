@@ -26,6 +26,7 @@ exp2 = tl_extra_shim.exp2
 @pointwise_dynamic(
     promotion_methods=[(0, "INT_TO_FLOAT")],
     enable_trident=True,
+    dynamic=False,
 )
 @triton.jit
 def sigmoid_forward(x):
@@ -39,6 +40,7 @@ def sigmoid_forward(x):
 @pointwise_dynamic(
     promotion_methods=[(0, "INT_TO_FLOAT")],
     enable_trident=True,
+    dynamic=False,
 )
 @triton.jit
 def sigmoid_backward_kernel(dy, y):

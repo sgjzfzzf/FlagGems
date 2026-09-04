@@ -101,7 +101,9 @@ def generate_functional_padding_wrapper(
     # wrapper signature
     parameters: str = parameter_for_wrapper()
     wrapper_signature: str = f"def {wrapper_name}({parameters}):"
-    code.writeline("@trident.jit")
+    # Padding sizes feed Python list/shape construction, which currently
+    # creates unsatisfiable dynamic-shape guards in Trident.
+    code.writeline("@trident.jit(dynamic=False)")
     code.writeline(wrapper_signature)
 
     with code.indent():
