@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
-"""Optional Chrome-trace capture for one RMSNorm mode (Torch Profiler).
+"""Optional Chrome-trace capture for one Softmax mode (Torch Profiler).
 
-Bare timing lives in run_rms_norm.py / bench_rms_norm.py — use this only for traces.
+Bare timing lives in run_softmax.py / bench_softmax.py — use this only for traces.
 
 Example:
-  python trace_rms_norm.py --mode trident --stage warm --output-dir ./trace_out
+  python trace_softmax.py --mode trident --stage warm --output-dir ./profile_results
 """
 
 from __future__ import annotations
 
 import argparse
 import gzip
-import importlib
 import json
 import os
 import shutil
@@ -28,7 +27,7 @@ _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
-from run_rms_norm import MODES, build  # noqa: E402
+from run_softmax import MODES, build  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,6 +36,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--stage", choices=("cold", "warm"), default="warm")
     p.add_argument("--m", type=int, default=1024)
     p.add_argument("--n", type=int, default=128)
+    p.add_argument("--dim", type=int, default=1)
     p.add_argument("--warmup", type=int, default=3)
     p.add_argument("--output-dir", type=Path, required=True)
     p.add_argument("--with-stack", action="store_true", default=True)
@@ -48,14 +48,11 @@ def main() -> None:
     args = parse_args()
     torch.manual_seed(0)
     x = torch.randn(args.m, args.n, device="cuda", dtype=torch.float32)
-    weight = torch.randn(args.n, device="cuda", dtype=torch.float32)
-    eps = 1e-5
-    normalized_shape = [args.n]
-    ref = torch.nn.functional.rms_norm(x, (args.n,), weight=weight, eps=eps)
+    ref = torch.nn.functional.softmax(x, dim=args.dim)
     fn = build(args.mode)
 
     def call():
-        return fn(x, normalized_shape, weight, eps)
+        return fn(x, args.dim)
 
     if args.stage == "warm":
         for _ in range(args.warmup):
@@ -76,7 +73,7 @@ def main() -> None:
     torch.testing.assert_close(output, ref, atol=1e-4, rtol=1e-3)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    trace = args.output_dir / f"rms_norm_{args.mode}_{args.stage}_e2e_trace.json"
+    trace = args.output_dir / f"softmax_{args.mode}_{args.stage}_e2e_trace.json"
     prof.export_chrome_trace(str(trace))
     with trace.open("rb") as source, gzip.open(f"{trace}.gz", "wb", compresslevel=1) as target:
         shutil.copyfileobj(source, target)
@@ -93,7 +90,7 @@ def main() -> None:
                 "stack": event.stack,
             }
         )
-    (args.output_dir / f"rms_norm_{args.mode}_{args.stage}_e2e_cpu_events.json").write_text(
+    (args.output_dir / f"softmax_{args.mode}_{args.stage}_e2e_cpu_events.json").write_text(
         json.dumps(events, indent=2) + "\n"
     )
     for event in events:

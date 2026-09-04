@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
-"""Orchestrate RMSNorm bare benches: subprocess CLI per (round, mode), aggregate in arrays.
+"""Orchestrate Softmax bare benches: subprocess CLI per (round, mode), aggregate in arrays.
 
-Replaces profile_rms_norm_all_modes.sh. For chrome traces use trace_rms_norm.py.
+Aligned with motivation/norm/bench_rms_norm.py. For chrome traces use trace_softmax.py.
 
 Example:
-  python bench_rms_norm.py --rounds 5 --warmup 20 --repeats 10
-  # default --metrics both → summary_mean.json has host_* and e2e_*
-  python bench_rms_norm.py --rounds 1 --modes trident,torch_compile_guard
+  python bench_softmax.py --rounds 5 --warmup 20 --repeats 10 --m 1024 --n 128
 """
 
 from __future__ import annotations
@@ -21,7 +19,7 @@ from collections import defaultdict
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
-_RUNNER = _HERE / "run_rms_norm.py"
+_RUNNER = _HERE / "run_softmax.py"
 
 MODES = (
     "torch_compile",
@@ -43,13 +41,13 @@ def run_one(
     stage: str,
     m: int,
     n: int,
+    dim: int,
     warmup: int,
     repeats: int,
     metrics: str,
     cache_dir: Path,
     gpu: int,
 ) -> dict:
-    """Call run_rms_norm.py as a fresh process; parse the JSON line on stdout."""
     cmd = [
         python,
         str(_RUNNER),
@@ -61,6 +59,8 @@ def run_one(
         str(m),
         "--n",
         str(n),
+        "--dim",
+        str(dim),
         "--warmup",
         str(warmup),
         "--repeats",
@@ -85,10 +85,9 @@ def run_one(
     if proc.returncode != 0:
         sys.stderr.write(proc.stderr)
         raise SystemExit(
-            f"run_rms_norm.py failed mode={mode} exit={proc.returncode}\n"
+            f"run_softmax.py failed mode={mode} exit={proc.returncode}\n"
             f"cmd: {' '.join(cmd)}"
         )
-    # Last non-empty stdout line should be the JSON payload (warnings may precede).
     lines = [ln for ln in proc.stdout.splitlines() if ln.strip()]
     if not lines:
         sys.stderr.write(proc.stderr)
@@ -136,29 +135,23 @@ def summarize(by_mode: dict[str, dict[str, list[float]]], metrics: str) -> dict:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--rounds", type=int, default=5, help="Independent full passes (default: 5)")
+    p.add_argument("--rounds", type=int, default=5)
     p.add_argument("--warmup", type=int, default=20)
     p.add_argument("--repeats", type=int, default=10)
-    p.add_argument("--m", type=int, default=1024, help="Rows (default: 1024)")
-    p.add_argument("--n", type=int, default=128, help="Norm dim (default: 128, Qwen head_dim)")
+    p.add_argument("--m", type=int, default=1024)
+    p.add_argument("--n", type=int, default=128)
+    p.add_argument("--dim", type=int, default=1)
     p.add_argument("--stage", choices=("cold", "warm"), default="warm")
     p.add_argument(
         "--metrics",
         choices=("e2e", "host", "both"),
         default="both",
-        help="Record host and/or e2e into summary JSON (default: both)",
     )
-    p.add_argument(
-        "--modes",
-        type=str,
-        default=",".join(MODES),
-        help="Comma-separated subset of modes",
-    )
+    p.add_argument("--modes", type=str, default=",".join(MODES))
     p.add_argument(
         "--output-dir",
         type=Path,
         default=_HERE / "bench_results",
-        help="summary_mean.json + per-job caches",
     )
     p.add_argument("--gpu", type=int, default=0)
     p.add_argument("--python", type=str, default=sys.executable)
@@ -179,7 +172,7 @@ def main() -> None:
 
     print(
         f"[bench] rounds={args.rounds} warmup={args.warmup} repeats={args.repeats} "
-        f"shape=({args.m},{args.n}) metrics={args.metrics} stage={args.stage}"
+        f"shape=({args.m},{args.n}) dim={args.dim} metrics={args.metrics} stage={args.stage}"
     )
     print(f"[bench] runner={_RUNNER}")
 
@@ -194,6 +187,7 @@ def main() -> None:
                 stage=args.stage,
                 m=args.m,
                 n=args.n,
+                dim=args.dim,
                 warmup=args.warmup,
                 repeats=args.repeats,
                 metrics=args.metrics,
@@ -201,7 +195,6 @@ def main() -> None:
                 gpu=args.gpu,
             )
             parts = []
-            # Runner always emits host_us + e2e_us; --metrics selects summary columns.
             if args.metrics in ("host", "both") and "host_us" in result:
                 by_mode[mode]["host"].append(result["host_us"])
                 parts.append(f"host_us={result['host_us']:.3f}")
@@ -218,6 +211,7 @@ def main() -> None:
             "repeats": args.repeats,
             "m": args.m,
             "n": args.n,
+            "dim": args.dim,
             "shape": [args.m, args.n],
             "stage": args.stage,
             "metrics": args.metrics,

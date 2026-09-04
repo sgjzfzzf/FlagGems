@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Single-mode RMSNorm bare timing CLI (no Torch Profiler).
+"""Single-mode Softmax bare timing CLI (no Torch Profiler).
 
-Invoked by bench_rms_norm.py once per (round, mode). Prints one JSON line to stdout.
+Invoked by bench_softmax.py once per (round, mode). Prints one JSON line to stdout.
 
 Example:
-  python run_rms_norm.py --mode trident --warmup 20 --repeats 10
-  # JSON always can include host_us + e2e_us (default --metrics both)
+  python run_softmax.py --mode trident --m 1024 --n 128 --dim 1
 """
 
 from __future__ import annotations
@@ -28,7 +27,7 @@ _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
-from rms_norm_trident import rms_norm_compile_entry, rms_norm_jit  # noqa: E402
+from softmax_trident import softmax_compile_entry, softmax_jit  # noqa: E402
 
 MODES = (
     "torch_compile",
@@ -84,7 +83,7 @@ def patch_cudagraph_triton_meta() -> None:
 
 def build(mode: str):
     if mode == "trident":
-        return rms_norm_jit
+        return softmax_jit
     options = {}
     if "guard" in mode:
         torch._dynamo.config.install_free_tensors = True
@@ -98,7 +97,7 @@ def build(mode: str):
         if "cudagraph" in mode:
             allow_cpp_wrapper_cudagraph()
     return torch.compile(
-        rms_norm_compile_entry,
+        softmax_compile_entry,
         fullgraph=True,
         dynamic=False,
         options=options or None,
@@ -110,7 +109,6 @@ def timed(call):
 
     host_us: sync → call() returns (CPU dispatch / wrapper / launch; GPU usually still async).
     e2e_us:  same start → after cuda.synchronize() (host + GPU + wait).
-    Recording host is one extra perf_counter read; it does not instrument the wrapper.
     """
     torch.cuda.synchronize()
     start = time.perf_counter_ns()
@@ -125,8 +123,9 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--mode", choices=MODES, required=True)
     p.add_argument("--stage", choices=("cold", "warm"), default="warm")
-    p.add_argument("--m", type=int, default=1024, help="Rows (e.g. B*S or B*S*H)")
-    p.add_argument("--n", type=int, default=128, help="Norm dim (e.g. head_dim / hidden)")
+    p.add_argument("--m", type=int, default=1024, help="Rows (e.g. B*H)")
+    p.add_argument("--n", type=int, default=128, help="Reduce length along --dim")
+    p.add_argument("--dim", type=int, default=1, help="Softmax dim (default: 1)")
     p.add_argument("--warmup", type=int, default=20)
     p.add_argument("--repeats", type=int, default=10)
     p.add_argument(
@@ -139,7 +138,7 @@ def parse_args() -> argparse.Namespace:
         "--cache-dir",
         type=Path,
         default=None,
-        help="Per-job Triton/Inductor cache root (triton/ and inductor/ created under it)",
+        help="Per-job Triton/Inductor cache root",
     )
     return p.parse_args()
 
@@ -155,16 +154,12 @@ def main() -> None:
         os.environ["TORCHINDUCTOR_CACHE_DIR"] = str(inductor)
 
     torch.manual_seed(0)
-    # x: (M, N), normalize over last dim — Qwen-like q/k norm uses N=head_dim.
     x = torch.randn(args.m, args.n, device="cuda", dtype=torch.float32)
-    weight = torch.randn(args.n, device="cuda", dtype=torch.float32)
-    eps = 1e-5
-    normalized_shape = [args.n]
-    ref = torch.nn.functional.rms_norm(x, (args.n,), weight=weight, eps=eps)
+    ref = torch.nn.functional.softmax(x, dim=args.dim)
     fn = build(args.mode)
 
     def call():
-        return fn(x, normalized_shape, weight, eps)
+        return fn(x, args.dim)
 
     warmup = args.warmup if args.stage == "warm" else 0
     for _ in range(warmup):
@@ -182,12 +177,12 @@ def main() -> None:
         e2e_samples.append(e2e_us)
     torch.testing.assert_close(output, ref, atol=1e-4, rtol=1e-3)
 
-    # Always record both host and e2e; --metrics only selects what the bench aggregates.
     payload: dict = {
         "mode": args.mode,
         "stage": args.stage,
         "m": args.m,
         "n": args.n,
+        "dim": args.dim,
         "shape": [args.m, args.n],
         "warmup": warmup,
         "repeats": args.repeats,
@@ -197,8 +192,6 @@ def main() -> None:
         "e2e_us": statistics.median(e2e_samples),
         "e2e_samples_us": e2e_samples,
     }
-
-    # One JSON object on stdout for the orchestrator to parse.
     print(json.dumps(payload), flush=True)
 
 
