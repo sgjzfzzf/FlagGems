@@ -22,11 +22,15 @@ from flag_gems.utils.pointwise_dynamic import ComplexMode
 
 logger = logging.getLogger(__name__)
 
+# Trident's dynamic export makes the generated stride-ordering comparison
+# symbolic.  This pointwise path needs concrete strides for its Triton layout
+# selection, so compile one specialization per shape instead.
 
 @pointwise_dynamic(
     is_tensor=[True, True, False],
     promotion_methods=[(0, 1, "DEFAULT")],
     enable_trident=True,
+    dynamic=False,
 )
 @triton.jit
 def add_func(x, y, alpha):
@@ -37,6 +41,7 @@ def add_func(x, y, alpha):
     is_tensor=[True, False, False],
     promotion_methods=[(0, 1, "DEFAULT")],
     enable_trident=True,
+    dynamic=False,
 )
 @triton.jit
 def add_func_tensor_scalar(x, y, alpha):
@@ -47,6 +52,7 @@ def add_func_tensor_scalar(x, y, alpha):
     is_tensor=[False, True, False],
     promotion_methods=[(0, 1, "DEFAULT")],
     enable_trident=True,
+    dynamic=False,
 )
 @triton.jit
 def add_func_scalar_tensor(x, y, alpha):
