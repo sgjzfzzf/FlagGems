@@ -15,6 +15,7 @@
 import logging
 
 import torch
+import trident
 import triton
 import triton.language as tl
 
@@ -374,16 +375,27 @@ def sort_kernel(
     tl.store(out_index_ptr, sorted_index_val, mask=mask)
 
 
+@trident.jit
 def sort(inp, dim=-1, descending=False):
     # We only implement stable radix sort here
     logger.debug("GEMS SORT")
-    return sort_stable(inp, stable=False, dim=dim, descending=descending)
+    return _sort_stable_impl(inp, stable=False, dim=dim, descending=descending)
 
 
+@trident.jit
 def sort_stable(inp, *, stable, dim=-1, descending=False):
     logger.debug("GEMS SORT.STABLE")
+    return _sort_stable_impl(inp, stable=stable, dim=dim, descending=descending)
+
+
+def _sort_stable_impl(inp, *, stable, dim=-1, descending=False):
     # We only implement stable radix sort here
     _ = stable
+    # The Triton launch geometry and temporary buffers specialize on both the
+    # sorted length and the number of rows. Make the input shape an explicit
+    # Dynamo specialization boundary so dynamic Trident dispatch cannot reuse
+    # a launch compiled for an incompatible shape.
+    torch._dynamo.mark_static(inp)
     sort_elem_cnt = inp.shape[dim]
     if sort_elem_cnt == 1:
         return inp, torch.zeros_like(inp, dtype=torch.int64)

@@ -14,16 +14,19 @@
 
 import logging
 
-from flag_gems.ops.sort import sort_stable
+import trident
+
+from flag_gems.ops.sort import _sort_stable_impl
 
 logger = logging.getLogger(__name__)
 
 
+@trident.jit
 def argsort(inp, dim=-1, descending=False):
     """Returns the indices that sort a tensor along a given dimension.
 
     This is equivalent to calling torch.sort and returning only the indices.
     """
     logger.debug("GEMS ARGSORT")
-    _, indices = sort_stable(inp, stable=True, dim=dim, descending=descending)
+    _, indices = _sort_stable_impl(inp, stable=True, dim=dim, descending=descending)
     return indices
