@@ -16,6 +16,7 @@ import logging
 from typing import List, Tuple, Union
 
 import torch
+import trident
 import triton
 import triton.language as tl
 
@@ -119,6 +120,7 @@ def cat_copy_func_kernel_4(
     tl.store(out_ptr + out_idx, data, mask=mask)
 
 
+@trident.jit
 def _cat_run_kernel(
     A: List[torch.Tensor],
     dim: int,
