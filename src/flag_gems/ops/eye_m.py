@@ -15,17 +15,16 @@
 import logging
 
 import torch
+import trident
 import triton
 import triton.language as tl
 
 from flag_gems.runtime import device, torch_device_fn
-from flag_gems.utils import libentry
 
 logger = logging.getLogger(__name__)
 device_ = device
 
 
-@libentry()
 @triton.jit
 def eye_kernel(
     out_ptr,
@@ -49,25 +48,26 @@ def eye_kernel(
     tl.store(out_ptr + off_ij, val, mask=mask)
 
 
-def eye_m(n, m, *, dtype=None, layout=torch.strided, device=None, pin_memory=None):
+@trident.jit
+def _eye_m(n, m, *, dtype=None, layout=torch.strided, dev=None, pin_memory=None):
     """
     Triton-based implementation of torch.eye_m(n, m), using 2D tiles to split the matrix into blocks.
     """
     logger.debug("GEMS EYE_M")
     if dtype is None:
         dtype = torch.get_default_dtype()
-    if device is None:
-        device = torch.device(device_.name)
+    if dev is None:
+        dev = torch.device(device_.name)
     if layout != torch.strided:
         raise ValueError("Currently only strided layout is supported for eye_m.")
 
     out = torch.empty(
-        (n, m), dtype=dtype, device=device, layout=layout, pin_memory=pin_memory
+        (n, m), dtype=dtype, device=dev, layout=layout, pin_memory=pin_memory
     )
     BLOCK_SIZE = 32
     grid = (triton.cdiv(n, BLOCK_SIZE), triton.cdiv(m, BLOCK_SIZE))
 
-    with torch_device_fn.device(device):
+    with torch_device_fn.device(dev):
         eye_kernel[grid](
             out,
             n,
@@ -76,3 +76,14 @@ def eye_m(n, m, *, dtype=None, layout=torch.strided, device=None, pin_memory=Non
             BLOCK_SIZE,
         )
     return out
+
+
+def eye_m(n, m, *, dtype=None, layout=torch.strided, device=None, pin_memory=None):
+    return _eye_m(
+        n,
+        m,
+        dtype=dtype,
+        layout=layout,
+        dev=device,
+        pin_memory=pin_memory,
+    )

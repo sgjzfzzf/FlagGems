@@ -15,6 +15,7 @@
 import logging
 
 import torch
+import trident
 import triton
 import triton.language as tl
 
@@ -39,19 +40,30 @@ def zeros_kernel(
     tl.store(output_ptr + offsets, 0.0, mask=mask)
 
 
-def zeros(size, *, dtype=None, layout=None, device=None, pin_memory=None):
+@trident.jit
+def _zeros(size, *, dtype=None, layout=None, dev=None, pin_memory=None):
     logger.debug("GEMS ZEROS")
     if dtype is None:
         dtype = torch.get_default_dtype()
-    if device is None:
-        device = torch.device(device_.name)
+    if dev is None:
+        dev = torch.device(device_.name)
 
-    out = torch.empty(size, device=device, dtype=dtype)
+    out = torch.empty(size, device=dev, dtype=dtype)
     N = volume(size)
     grid_fn = lambda meta: (triton.cdiv(N, meta["BLOCK_SIZE"]),)
-    with torch_device_fn.device(device):
+    with torch_device_fn.device(dev):
         zeros_kernel[grid_fn](out, N, BLOCK_SIZE=1024)
     return out
+
+
+def zeros(size, *, dtype=None, layout=None, device=None, pin_memory=None):
+    return _zeros(
+        size,
+        dtype=dtype,
+        layout=layout,
+        dev=device,
+        pin_memory=pin_memory,
+    )
 
 
 def zero_(x: torch.Tensor) -> torch.Tensor:
