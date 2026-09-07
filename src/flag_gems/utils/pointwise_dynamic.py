@@ -551,7 +551,7 @@ class KernelGenerator:
             )
 
     def gen_body_gsl_with_bptr(self, code):
-        code.writeline("num_ctas = ext.num_programs(0)")
+        code.writeline("num_ctas = num_programs(0)")
         code.writeline("for j in range(0, tiles_per_cta):")
         with code.indent():
             code.writeline("tile_id = pid + j * num_ctas")
@@ -627,7 +627,7 @@ class KernelGenerator:
             )
 
     def gen_body_gsl_without_bptr(self, code):
-        code.writeline("num_ctas = ext.num_programs(0)")
+        code.writeline("num_ctas = num_programs(0)")
         code.writeline("for j in range(0, tiles_per_cta):")
         with code.indent():
             code.writeline("tile_id = pid + j * num_ctas")
@@ -646,7 +646,7 @@ class KernelGenerator:
             return code
 
         with code.indent():
-            code.writeline("pid = ext.program_id(0)")
+            code.writeline("pid = program_id(0)")
             self.gen_num_tiles(code)
             # monolitic kernel: one_tile_per_cta, it may requires a very large grid to compute
             code.writeline("if one_tile_per_cta: # monolitic kernel style")
@@ -672,7 +672,7 @@ class KernelGenerator:
             return code
 
         with code.indent():
-            code.writeline("pid = ext.program_id(0)")
+            code.writeline("pid = program_id(0)")
             self.gen_num_tiles(code)
             # monolitic kernel: one_tile_per_cta, it may requires a very large grid to compute
             code.writeline("if one_tile_per_cta: # monolitic kernel style")
@@ -746,7 +746,7 @@ class KernelGenerator:
             )
 
     def gen_body_gsl_1d_tile(self, code):
-        code.writeline("num_ctas = ext.num_programs(0)")
+        code.writeline("num_ctas = num_programs(0)")
         code.writeline("for j in range(0, tiles_per_cta):")
         with code.indent():
             code.writeline("tile_id = pid + j * num_ctas")
@@ -765,7 +765,7 @@ class KernelGenerator:
             return code
 
         with code.indent():
-            code.writeline("pid = ext.program_id(0)")
+            code.writeline("pid = program_id(0)")
             # code.writeline("num_ctas = te.num_programs(0)")
             # monolitic kernel: one_tile_per_cta, it may requires a very large grid to compute
             code.writeline("if one_tile_per_cta: # monolitic kernel style")
@@ -804,7 +804,19 @@ class WrapperGenerator:
     def output_name(self, i):
         return f"out{i}"
 
-    def gen_signature(self, code: IndentedBuffer):
+    def gen_trident_decorator(self, code: IndentedBuffer):
+        decorator = "@trident.jit"
+        if not self.config.trident_dynamic:
+            decorator += "(dynamic=False)"
+        code.writeline(decorator)
+
+    def gen_signature(
+        self,
+        code: IndentedBuffer,
+        *,
+        name: Optional[str] = None,
+        include_launch_metadata: bool = False,
+    ):
         # TODO: check if triton handles constexprs transitively
         schema = self.fx
         params: List[str] = []
@@ -840,7 +852,70 @@ class WrapperGenerator:
 
         for i in range(schema.num_output_tensors()):
             params.append(f"{self.output_name(i)}: Union[torch.Tensor, StridedBuffer]")
-        code.writeline(f"def {self.name}({_cs(params)}): ")
+        if include_launch_metadata:
+            for kind, count in (
+                ("in", schema.num_input_tensors()),
+                ("out", schema.num_output_tensors()),
+            ):
+                for i in range(count):
+                    params.extend(f"{kind}{i}_stride{j}: int" for j in range(self.ndim))
+                    params.extend(
+                        f"{kind}{i}_stride_order{j}: int" for j in range(self.ndim)
+                    )
+            params.extend(f"s{j}: int" for j in range(self.ndim))
+            params.extend(["num_tasks: int", "num_ctas: int", "tiles_per_cta: int"])
+            params.extend(f"tile_size{j}: int" for j in range(self.ndim))
+            params.extend(["one_tile_per_cta: bool", "num_warps: int"])
+        code.writeline(f"def {name or self.name}({_cs(params)}): ")
+
+    def gen_launch_metadata_wrapper(self, code: IndentedBuffer, inner_name: str):
+        """Prepare concrete launch metadata outside the captured graph."""
+        self.gen_signature(code)
+        with code.indent():
+            schema = self.fx
+            self.gen_docstring(code)
+            self.gen_same_shape_check(code)
+            self.gen_task_partition(code)
+            for kind, count in (
+                ("in", schema.num_input_tensors()),
+                ("out", schema.num_output_tensors()),
+            ):
+                for i in range(count):
+                    code.writeline(f"{kind}{i}_strides = {kind}{i}.stride()")
+                    code.writeline(
+                        f"{kind}{i}_stride_order = stride_order({kind}{i}_strides)"
+                    )
+
+            positional = [self.input_name(i) for i in range(schema.num_inputs())]
+            code.writeline(f"return {inner_name}({_cs(positional)},")
+            with code.indent():
+                for i in range(schema.num_output_tensors()):
+                    code.writeline(f"out{i}=out{i},")
+                for kind, count in (
+                    ("in", schema.num_input_tensors()),
+                    ("out", schema.num_output_tensors()),
+                ):
+                    for i in range(count):
+                        for j in range(self.ndim):
+                            code.writeline(
+                                f"{kind}{i}_stride{j}={kind}{i}_strides[{j}],"
+                            )
+                        for j in range(self.ndim):
+                            code.writeline(
+                                f"{kind}{i}_stride_order{j}="
+                                f"{kind}{i}_stride_order[{j}],"
+                            )
+                for j in range(self.ndim):
+                    code.writeline(f"s{j}=shape[{j}],")
+                code.writeline("num_tasks=num_tasks,")
+                code.writeline("num_ctas=num_ctas,")
+                code.writeline("tiles_per_cta=tiles_per_cta,")
+                for j in range(self.ndim):
+                    code.writeline(f"tile_size{j}=tile_sizes[{j}],")
+                code.writeline("one_tile_per_cta=one_tile_per_cta,")
+                code.writeline("num_warps=num_warps,")
+            code.writeline(")")
+        code.newline()
 
     def gen_docstring(self, code: IndentedBuffer):
         schema = self.fx
@@ -933,6 +1008,8 @@ class WrapperGenerator:
     def gen_kernel_launch(
         self,
         code: IndentedBuffer,
+        *,
+        precomputed_launch_metadata: bool = False,
     ):
         schema = self.fx
         ndim = self.ndim
@@ -940,22 +1017,28 @@ class WrapperGenerator:
         with_block_pointer = self.config.prefer_block_pointer
 
         code.writeline("# kernel launch")
-        for i in range(schema.num_input_tensors()):
-            code.writeline(f"in{i}_strides = in{i}.stride()")
-            if not with_block_pointer:
-                continue
-            if ndim >= 2:  # where ndim is 1, we don't need to compute stride order
-                code.writeline(f"in{i}_stride_order = stride_order(in{i}_strides)")
-            else:
-                code.writeline(f"in{i}_stride_order = (0,)")
-        for i in range(schema.num_output_tensors()):
-            code.writeline(f"out{i}_strides = out{i}.stride()")
-            if not with_block_pointer:
-                continue
-            if ndim >= 2:
-                code.writeline(f"out{i}_stride_order = stride_order(out{i}_strides)")
-            else:
-                code.writeline(f"out{i}_stride_order = (0,)")
+        if not precomputed_launch_metadata:
+            for i in range(schema.num_input_tensors()):
+                code.writeline(f"in{i}_strides = in{i}.stride()")
+                if not with_block_pointer:
+                    continue
+                if ndim >= 2:
+                    code.writeline(f"in{i}_stride_order = stride_order(in{i}_strides)")
+                else:
+                    code.writeline(f"in{i}_stride_order = (0,)")
+            for i in range(schema.num_output_tensors()):
+                code.writeline(f"out{i}_strides = out{i}.stride()")
+                if not with_block_pointer:
+                    continue
+                if ndim >= 2:
+                    code.writeline(
+                        f"out{i}_stride_order = stride_order(out{i}_strides)"
+                    )
+                else:
+                    code.writeline(f"out{i}_stride_order = (0,)")
+
+        if precomputed_launch_metadata:
+            code.writeline("grid = (num_ctas, 1, 1)")
 
         code.writeline("with torch_device_fn.device(in0.device.index):")
         with code.indent():
@@ -975,31 +1058,63 @@ class WrapperGenerator:
 
                 if ndim > 0:
                     for i in range(schema.num_input_tensors()):
-                        s = ", ".join(f"in{i}_strides[{j}]" for j in range(ndim))
+                        s = ", ".join(
+                            (
+                                f"in{i}_stride{j}"
+                                if precomputed_launch_metadata
+                                else f"in{i}_strides[{j}]"
+                            )
+                            for j in range(ndim)
+                        )
                         code.writeline(f"{s}, # stride for in{i}")
                         if not with_block_pointer:
                             continue
                         order = ", ".join(
-                            f"in{i}_stride_order[{j}]" for j in range(ndim)
+                            (
+                                f"in{i}_stride_order{j}"
+                                if precomputed_launch_metadata
+                                else f"in{i}_stride_order[{j}]"
+                            )
+                            for j in range(ndim)
                         )
                         code.writeline(f"{order}, # stride order for in{i}")
 
                     for i in range(schema.num_output_tensors()):
-                        s = ", ".join(f"out{i}_strides[{j}]" for j in range(ndim))
+                        s = ", ".join(
+                            (
+                                f"out{i}_stride{j}"
+                                if precomputed_launch_metadata
+                                else f"out{i}_strides[{j}]"
+                            )
+                            for j in range(ndim)
+                        )
                         code.writeline(f"{s}, # stride for out{i}")
                         if not with_block_pointer:
                             continue
                         order = ", ".join(
-                            f"out{i}_stride_order[{j}]" for j in range(ndim)
+                            (
+                                f"out{i}_stride_order{j}"
+                                if precomputed_launch_metadata
+                                else f"out{i}_stride_order[{j}]"
+                            )
+                            for j in range(ndim)
                         )
                         code.writeline(f"{order}, # stride orderfor out{i}")
 
-                    shape_args: str = ", ".join(f"shape[{i}]" for i in range(ndim))
+                    shape_args: str = ", ".join(
+                        f"s{i}" if precomputed_launch_metadata else f"shape[{i}]"
+                        for i in range(ndim)
+                    )
                     code.writeline(f"{shape_args}, # task indexing space")
                     code.writeline("num_tasks, # num tasks")
                     code.writeline("tiles_per_cta=tiles_per_cta, # tiles_per_cta")
                     for i in range(ndim):
-                        code.writeline(f"tile_size{i}=tile_sizes[{i}],")
+                        value = (
+                            f"tile_size{i}"
+                            if precomputed_launch_metadata
+                            else f"tile_sizes[{i}]"
+                        )
+                        code.writeline(f"tile_size{i}={value},")
                     code.writeline("one_tile_per_cta=one_tile_per_cta,")
                 code.writeline("num_warps=num_warps,")
             code.writeline(")")
@@ -1055,28 +1170,34 @@ class WrapperGenerator:
         code.writeline(f"return {return_exprs}")
 
     def codegen_nd_tile(self, code):
-        if self.config.enable_trident_jit:
-            decorator = "@trident.jit"
-            if not self.config.trident_dynamic:
-                decorator += "(dynamic=False)"
-            code.writeline(decorator)
-        self.gen_signature(code)
+        split_stride_order = (
+            self.config.enable_trident_jit
+            and self.config.prefer_block_pointer
+            and self.ndim >= 1
+        )
+        if split_stride_order:
+            inner_name = f"{self.name}_launch"
+            self.gen_launch_metadata_wrapper(code, inner_name)
+            self.gen_trident_decorator(code)
+            self.gen_signature(code, name=inner_name, include_launch_metadata=True)
+        else:
+            if self.config.enable_trident_jit:
+                self.gen_trident_decorator(code)
+            self.gen_signature(code)
 
         with code.indent():
-            self.gen_docstring(code)
-            self.gen_same_shape_check(code)
-            self.gen_task_partition(code)
-            self.gen_kernel_launch(code)
+            if not split_stride_order:
+                self.gen_docstring(code)
+                self.gen_same_shape_check(code)
+                self.gen_task_partition(code)
+            self.gen_kernel_launch(code, precomputed_launch_metadata=split_stride_order)
             self.gen_return(code)
         code.newline()
         return code
 
     def codegen_1d_tile(self, code):
         if self.config.enable_trident_jit:
-            decorator = "@trident.jit"
-            if not self.config.trident_dynamic:
-                decorator += "(dynamic=False)"
-            code.writeline(decorator)
+            self.gen_trident_decorator(code)
         self.gen_signature(code)
 
         with code.indent():
@@ -1204,7 +1325,10 @@ class ModuleGenerator:
         code.writeline("from flag_gems.utils.tensor_wrapper import StridedBuffer")
         if not self.config.enable_trident_jit:
             code.writeline("from flag_gems.utils.libentry import libentry")
-        code.writeline("from flag_gems.utils import triton_lang_extension as ext")
+        code.writeline(
+            "from flag_gems.utils.triton_lang_extension import "
+            "num_programs, program_id"
+        )
         code.writeline("from flag_gems.runtime import torch_device_fn")
 
         if self.config.enable_trident_jit:
