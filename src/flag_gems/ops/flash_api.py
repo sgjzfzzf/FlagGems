@@ -22,11 +22,7 @@ import triton
 import flag_gems
 from flag_gems import runtime
 from flag_gems.ops.flash_kernel import (
-    block_m_splitkv_heuristic,
-    block_n_splitkv_heuristic,
     flash_fwd_kernel,
-    flash_fwd_splitkv_combine_kernel,
-    flash_fwd_splitkv_kernel,
     flash_varlen_fwd_kernel,
 )
 from flag_gems.runtime import torch_device_fn
@@ -244,32 +240,15 @@ class fwd_params:
         self.block_size = block_size
         self.k_page_stride = k_page_stride
 
-    def args(self):
-        return tuple(getattr(self, k) for k in self.__slots__)
-
-
-def splits_heuristic(num_tasks, num_sms, n_blocks):
-    # splits when wave efficiency is low
-    n_waves = triton.cdiv(num_tasks, num_sms)
-    eff = (num_tasks / num_sms) / n_waves
-    if eff > 0.8 or n_waves > 1:
-        return 1
-
-    min_blocks_per_split = 2
-    best_splits = min(
-        triton.cdiv(n_blocks, min_blocks_per_split),
-        int(math.floor(1.0 / eff)),
-        num_sms,
-    )
-
-    return best_splits
+    def as_kwargs(self):
+        return {name: getattr(self, name) for name in self.__slots__}
 
 
 def round_multiple(x, m):
     return (x + m - 1) // m * m
 
 
-@trident.jit(dynamic=False)
+@trident.jit(dynamic=True)
 def _flash_varlan_fwd_launch(
     q_ptr,
     k_ptr,
@@ -318,6 +297,20 @@ def _flash_varlan_fwd_launch(
     block_size = k_ptr.size(1) if is_paged else 1
     k_batch_size = k_ptr.size(0) if is_paged else 0
 
+    # Trident's Triton HOP importer cannot lower None as a pointer argument.
+    # Replace every disabled optional pointer with a tensor alias before the
+    # kernel call; the matching constexpr flag keeps it from being accessed.
+    if not return_softmax:
+        p_ptr = q_ptr
+    if not is_cu_seqlens_q:
+        cu_seqlens_q_ptr = q_ptr
+    if not is_cu_seqlens_k:
+        cu_seqlens_k_ptr = q_ptr
+    if not is_seqused_k:
+        seqused_k_ptr = q_ptr
+    if not is_paged:
+        page_table_ptr = q_ptr
+
     # Local-window derivation (constant-folded; the Python wrapper applies
     # the same clamps for the GQA-swap decision, so these are idempotent
     # and the results match).
@@ -345,6 +338,8 @@ def _flash_varlan_fwd_launch(
         adjusted_scale_softmax_log2e = softmax_scale * M_LOG2E
 
     is_dropout = p_dropout > 0
+    if not is_dropout:
+        philox_args = q_ptr
     p_dropout_keep = 1 - p_dropout
     p_dropout_in_uint8_t = math.floor(p_dropout_keep * 255.0)
     rp_dropout = 1.0 / p_dropout_keep
@@ -355,6 +350,7 @@ def _flash_varlan_fwd_launch(
         else:
             alibi_slopes_batch_stride = 0
     else:
+        alibi_slopes_ptr = q_ptr
         alibi_slopes_batch_stride = 0
 
     # Strides are read from the tensors, matching the eager layout
@@ -445,7 +441,6 @@ def _flash_varlan_fwd_launch(
         num_heads,
     )
     kernel = flash_varlen_fwd_kernel[grid]
-    args = tuple(getattr(params, k) for k in params.__slots__)
     cfg_params = {
         "BLOCK_M": BLOCK_M,
         "BLOCK_N": BLOCK_N,
@@ -453,7 +448,7 @@ def _flash_varlan_fwd_launch(
         "num_warps": num_warps,
         "num_stages": 1 if not is_paged else num_stages,
     }
-    kernel(*args, **cfg_params)
+    kernel(**params.as_kwargs(), **cfg_params)
     return o_ptr
 
 
@@ -666,12 +661,12 @@ def mha_varlan_fwd(
         logger.debug("Running flash_varlen_fwd_kernel with config: %s", cfg_params)
 
         _flash_varlan_fwd_launch(
-            q,
-            k,
-            v,
-            out,
-            p,
-            lse,
+            q.detach(),
+            k.detach(),
+            v.detach(),
+            out.detach(),
+            p.detach(),
+            lse.detach(),
             cu_seqlens_q,
             cu_seqlens_k,
             seqused_k,
@@ -925,18 +920,18 @@ def mha_varlan_fwd_opt(
         logger.debug("Running flash_varlen_fwd_kernel with config: %s", cfg_params)
 
         _flash_varlan_fwd_launch(
-            q,
-            k,
-            v,
-            out,
-            p,
-            lse,
-            cu_seqlens_q,
-            cu_seqlens_k,
-            seqused_k,
-            page_table,
-            alibi_slopes,
-            philox_args,
+            q.detach(),
+            k.detach(),
+            v.detach(),
+            out.detach(),
+            p.detach() if p is not None else None,
+            lse.detach(),
+            cu_seqlens_q.detach() if cu_seqlens_q is not None else None,
+            cu_seqlens_k.detach() if cu_seqlens_k is not None else None,
+            seqused_k.detach() if seqused_k is not None else None,
+            page_table.detach() if page_table is not None else None,
+            alibi_slopes.detach() if alibi_slopes is not None else None,
+            philox_args.detach() if philox_args is not None else None,
             cu_seqlens_q is not None,  # is_cu_seqlens_q
             cu_seqlens_k is not None,  # is_cu_seqlens_k
             seqused_k is not None,  # is_seqused_k
@@ -973,7 +968,7 @@ def mha_varlan_fwd_opt(
     return out, q, k, v, lse, philox_args, unused, p
 
 
-@trident.jit(dynamic=False)
+@trident.jit(dynamic=True)
 def _mha_fwd_launch(
     q_ptr,
     k_ptr,
@@ -990,16 +985,15 @@ def _mha_fwd_launch(
     window_size_right,
     is_alibi,
     return_softmax,
-    num_sms,
-    disable_splitkv,
 ):
     """Trident-JIT compiled flash attention forward kernel launch.
 
     Sizes, strides, rounding, softcap/dropout scaling, causal/local window
-    derivation, the GQA swap decision and the splitkv dispatch are all
-    derived (and constant-folded) inside the compiled module; the Python
-    call site only forwards raw inputs and consumes the (out, swapped)
-    pair returned here.
+    derivation and the GQA swap decision are all derived inside the compiled
+    module; the Python call site only forwards raw inputs and consumes the
+    (out, swapped) pair returned here. The dynamic path deliberately uses the
+    main masked kernel for every shape because split-K selection depends on
+    runtime efficiency heuristics that Trident cannot export dynamically.
     """
     b = q_ptr.size(0)
     seqlen_q = q_ptr.size(1)
@@ -1038,7 +1032,7 @@ def _mha_fwd_launch(
 
     seqlen_q_rounded = round_multiple(seqlen_q, 128)
     seqlen_k_rounded = round_multiple(seqlen_k, 32)
-    d_rounded = round_multiple(d, 32)
+    d_rounded = triton.next_power_of_2(d)
 
     M_LOG2E = 1.4426950408889634074
     if softcap > 0.0:
@@ -1078,32 +1072,8 @@ def _mha_fwd_launch(
         else:
             alibi_slopes_batch_stride = 0
     else:
+        alibi_slopes_ptr = q_ptr
         alibi_slopes_batch_stride = 0
-
-    # Splitkv dispatch decision, constant-folded into the compiled module
-    use_splitkv = False
-    n_splits = 1
-    splitkv_BN = 0
-    combine_BLOCK_M = 0
-    combine_BLOCK_K = 0
-    max_n_splits = 0
-    if not is_dropout and not is_local and not disable_splitkv:
-        BM = block_m_splitkv_heuristic(d)
-        n_tasks = b * h * triton.cdiv(seqlen_q, BM)
-        BN = block_n_splitkv_heuristic(d)
-        n_blocks = triton.cdiv(seqlen_k, BN)
-        n_splits = splits_heuristic(n_tasks, num_sms, n_blocks)
-        if n_splits > 1:
-            use_splitkv = True
-            splitkv_BN = BN
-            if d >= 128:
-                combine_BLOCK_M = 4
-            elif d >= 64:
-                combine_BLOCK_M = 8
-            else:
-                combine_BLOCK_M = 16
-            combine_BLOCK_K = triton.next_power_of_2(d)
-            max_n_splits = triton.next_power_of_2(n_splits)
 
     params = fwd_params(
         q_ptr,
@@ -1125,11 +1095,11 @@ def _mha_fwd_launch(
         v_batch_stride,
         o_batch_stride,
         False,  # is_cu_seqlens_q
-        None,  # cu_seqlens_q_ptr
+        q_ptr,  # unused cu_seqlens_q_ptr
         False,  # is_cu_seqlens_k
-        None,  # cu_seqlens_k_ptr
+        k_ptr,  # unused cu_seqlens_k_ptr
         False,  # is_seqused_k
-        None,  # seqused_k_ptr
+        k_ptr,  # unused seqused_k_ptr
         b,
         0,  # bk
         h,
@@ -1161,52 +1131,15 @@ def _mha_fwd_launch(
         alibi_slopes_ptr,
         alibi_slopes_batch_stride,
         0,  # total_q
-        None,  # page_table_ptr
+        k_ptr,  # unused page_table_ptr
         0,  # page_table_batch_stride
         0,  # block_size
         0,  # k_page_stride
     )
-    if use_splitkv:
-        lse_splits = torch.empty(
-            (n_splits, b, h, seqlen_q), dtype=torch.float, device=q_ptr.device
-        )
-        out_splits = torch.empty(
-            (n_splits, b, h, seqlen_q, d), dtype=torch.float, device=q_ptr.device
-        )
-        grid = lambda args: (
-            triton.cdiv(seqlen_q, args["BLOCK_M"]),
-            n_splits,
-            b * h,
-        )
-        splitkv_kernel = flash_fwd_splitkv_kernel[grid]
-        params.o_ptr = out_splits
-        params.softmax_lse_ptr = lse_splits
-        n_blocks = triton.cdiv(seqlen_k, splitkv_BN)
-        splitkv_kernel(*params.args(), blocks_per_split=triton.cdiv(n_blocks, n_splits))
-        grid = lambda args: (triton.cdiv(b * h * seqlen_q, combine_BLOCK_M),)
-        combine_kernel = flash_fwd_splitkv_combine_kernel[grid]
-        combine_kernel(
-            out_ptr=o_ptr,
-            lse_ptr=softmax_lse_ptr,
-            head_size=d,
-            out_split_stride=out_splits.stride(0),
-            lse_split_stride=lse_splits.stride(0),
-            out_b_stride=o_ptr.stride(0),
-            out_s_stride=o_ptr.stride(-3),
-            out_h_stride=o_ptr.stride(-1),
-            out_splits_ptr=out_splits,
-            lse_splits_ptr=lse_splits,
-            n_splits=n_splits,
-            BLOCK_M=combine_BLOCK_M,
-            BLOCK_K=combine_BLOCK_K,
-            q_total=b * h * seqlen_q,
-            MAX_N_SPLITS=max_n_splits,
-        )
-    else:
-        grid = lambda args: (triton.cdiv(seqlen_q, args["BLOCK_M"]), h * b)
-        kernel = flash_fwd_kernel[grid]
-        kernel(*params.args())
-    return o_ptr, seqlenq_ngroups_swapped
+    grid = lambda args: (triton.cdiv(seqlen_q, args["BLOCK_M"]), h * b)
+    kernel = flash_fwd_kernel[grid]
+    kernel(**params.as_kwargs())
+    return o_ptr, 1 if seqlenq_ngroups_swapped else 0
 
 
 def mha_fwd(
@@ -1372,16 +1305,14 @@ def mha_fwd(
         )
         flash_fwd_kernel.cache.setdefault(seed_key, flash_fwd_kernel.configs[0])
 
-        num_sms = torch_device_fn.get_device_properties("cuda").multi_processor_count
-
         _, seqlenq_ngroups_swapped = _mha_fwd_launch(
-            q,
-            k,
-            v,
-            out,
-            p,
-            lse,
-            alibi_slopes,  # alibi_slopes_ptr
+            q.detach(),
+            k.detach(),
+            v.detach(),
+            out.detach(),
+            p.detach(),
+            lse.detach(),
+            alibi_slopes.detach() if alibi_slopes is not None else None,
             philox_args,
             softmax_scale,
             softcap,
@@ -1390,8 +1321,6 @@ def mha_fwd(
             window_size_right,
             is_alibi,
             return_softmax,
-            num_sms,
-            disable_splitkv,
         )
 
         if seqlenq_ngroups_swapped:

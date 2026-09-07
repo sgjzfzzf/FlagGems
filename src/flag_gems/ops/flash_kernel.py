@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
+
 import triton
 import triton.language as tl
 
@@ -224,50 +226,6 @@ def apply_softcap(S, softcap, is_softcap: tl.constexpr):
     return S
 
 
-def block_m_splitkv_heuristic(headdim):
-    return 128 if headdim <= 128 else 64
-
-
-def block_n_splitkv_heuristic(headdim):
-    return 64 if headdim <= 64 else 32
-
-
-def is_even_mn(M, N, BM, BN, WL, WR):
-    if M % BM == 0 and N % BN == 0:
-        if M % N == 0 or N % M == 0:
-            if (WL == -1 or WL % BN == 0) and (WR == -1 or WR % BN == 0):
-                return True
-    return False
-
-
-def block_m_splitkv_heuristic_spec_args(args):
-    return 128 if args["d"] <= 128 else 64
-
-
-def block_n_splitkv_heuristic_spec_args(args):
-    return 64 if args["d"] <= 64 else 32
-
-
-def is_even_mn_spec_args(args):
-    if (
-        args["seqlen_q"] % args["BLOCK_M"] == 0
-        and args["seqlen_k"] % args["BLOCK_N"] == 0
-    ):
-        if (
-            args["seqlen_q"] % args["seqlen_k"] == 0
-            or args["seqlen_k"] % args["seqlen_q"] == 0
-        ):
-            if (
-                args["window_size_left"] == -1
-                or args["window_size_left"] % args["BLOCK_N"] == 0
-            ) and (
-                args["window_size_right"] == -1
-                or args["window_size_right"] % args["BLOCK_N"] == 0
-            ):
-                return True
-    return False
-
-
 def keep(cfg, must_keep=None):
     BM = cfg.kwargs["BLOCK_M"]
     BN = cfg.kwargs["BLOCK_N"]
@@ -279,38 +237,22 @@ def keep(cfg, must_keep=None):
     )
 
 
-def prune_fwd_configs(configs, nargs, **kwargs):
-    is_dropout = nargs["is_dropout"]
-    if is_dropout:
-        return list(
-            filter(lambda cfg: cfg.num_warps == 4 and cfg.num_stages < 4, configs)
-        )
-    else:
-        return configs
-
-
-def flash_fwd_kernel_heur_block_k(args):
-    return triton.next_power_of_2(args["d"])
+def conservative_fwd_configs():
+    # PRE_LOAD_V and exact-tile shortcuts are shape-dependent specializations.
+    # Retain only configs compatible with the always-masked dynamic kernel.
+    configs = []
+    for config in filter(keep, runtime.get_tuned_config("attention")):
+        if config.kwargs.get("PRE_LOAD_V", False):
+            continue
+        config = copy.deepcopy(config)
+        config.kwargs.pop("PRE_LOAD_V", None)
+        configs.append(config)
+    return configs
 
 
 @triton.autotune(
-    configs=list(filter(keep, runtime.get_tuned_config("attention"))),
-    prune_configs_by={"early_config_prune": prune_fwd_configs},
+    configs=conservative_fwd_configs(),
     key=["d", "is_dropout"],
-)
-@triton.heuristics(
-    values={
-        "BLOCK_K": flash_fwd_kernel_heur_block_k,
-        "PRE_LOAD_V": lambda args: False,
-        "IS_EVEN_MN": lambda args: is_even_mn(
-            args["seqlen_q"],
-            args["seqlen_k"],
-            args["BLOCK_M"],
-            args["BLOCK_N"],
-            args["window_size_left"],
-            args["window_size_right"],
-        ),
-    }
 )
 @triton.jit(
     do_not_specialize=["seqlen_q", "seqlen_k", "seqlen_q_rounded", "seqlen_k_rounded"]
@@ -382,14 +324,14 @@ def flash_fwd_kernel(
     block_size: tl.constexpr,
     k_page_stride: tl.constexpr,
     # kernel params
-    IS_EVEN_MN: tl.constexpr,
-    PRE_LOAD_V: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
-    BLOCK_K: tl.constexpr,
     num_warps: tl.constexpr,
     num_stages: tl.constexpr,
 ):
+    IS_EVEN_MN: tl.constexpr = False
+    PRE_LOAD_V: tl.constexpr = False
+    BLOCK_K: tl.constexpr = d_rounded
     m_block = tl.program_id(0)
     bh = tl.program_id(1)
     hid = bh % h
@@ -577,7 +519,9 @@ def flash_fwd_kernel(
                     else:
                         kvmask = col_idx < seqlen_k
                         tl.store(
-                            p_bp0 + col_start, P_drop, mask=qmask & kvmask[None, :]
+                            p_bp0 + col_start,
+                            P_drop,
+                            mask=(row_idx[:, None] < seqlen_q) & kvmask[None, :],
                         )
 
                 P = apply_dropout(
@@ -687,7 +631,11 @@ def flash_fwd_kernel(
                     tl.store(p_bp0 + col_start, P_drop)
                 else:
                     kvmask = col_idx < seqlen_k
-                    tl.store(p_bp0 + col_start, P_drop, mask=qmask & kvmask[None, :])
+                    tl.store(
+                        p_bp0 + col_start,
+                        P_drop,
+                        mask=(row_idx[:, None] < seqlen_q) & kvmask[None, :],
+                    )
 
             P = apply_dropout(
                 P,
@@ -758,21 +706,6 @@ def flash_fwd_bh_parallel_kernel():
     pass
 
 
-def flash_fwd_splitkv_kernel_heur_block_k(args):
-    return triton.next_power_of_2(args["d"])
-
-
-@triton.heuristics(
-    values={
-        "BLOCK_M": block_m_splitkv_heuristic_spec_args,
-        "BLOCK_N": block_n_splitkv_heuristic_spec_args,
-        "BLOCK_K": flash_fwd_splitkv_kernel_heur_block_k,
-        "num_warps": lambda args: 4,
-        "num_stages": lambda args: 3,
-        "PRE_LOAD_V": lambda args: True,
-        "IS_EVEN_MN": is_even_mn_spec_args,
-    }
-)
 @triton.jit(
     do_not_specialize=["seqlen_q", "seqlen_k", "seqlen_q_rounded", "seqlen_k_rounded"]
 )
@@ -843,15 +776,15 @@ def flash_fwd_splitkv_kernel(
     block_size: tl.constexpr,
     k_page_stride: tl.constexpr,
     # kernel params
-    IS_EVEN_MN: tl.constexpr,
-    PRE_LOAD_V: tl.constexpr,
     blocks_per_split: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
-    BLOCK_K: tl.constexpr,
     num_warps: tl.constexpr,
     num_stages: tl.constexpr,
 ):
+    IS_EVEN_MN: tl.constexpr = False
+    PRE_LOAD_V: tl.constexpr = True
+    BLOCK_K: tl.constexpr = d_rounded
     m_block = tl.program_id(0)
     split_id = tl.program_id(1)
     bid = tl.program_id(2) // h
