@@ -49,6 +49,52 @@ if flag_gems.vendor_name == "kunlunxin":
     pytestmark = pytest.mark.skip("Issue #2836: not working")
 
 
+@pytest.mark.skipif(flag_gems.vendor_name != "nvidia", reason="NVIDIA codegen")
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("dynamic", [False, True])
+@pytest.mark.parametrize("use_block_pointer", USE_BLOCK_POINTER)
+def test_pointwise_stride_codegen(enabled, dynamic, use_block_pointer):
+    """Check Gems code generation independently of the Trident runtime."""
+    from flag_gems.utils.code_utils import IndentedBuffer
+    from flag_gems.utils.pointwise_dynamic import ModuleGenerator
+
+    config = CodeGenConfig(
+        max_tile_size=1024,
+        max_grid_size=MAX_GRID_SIZES,
+        max_num_warps_per_cta=32,
+        prefer_block_pointer=use_block_pointer,
+        prefer_1d_tile=False,
+        enable_trident_jit=enabled,
+        trident_dynamic=dynamic,
+    )
+
+    @triton.jit
+    def scalar_add(x, y):
+        return x + y
+
+    schema = FunctionSchema(num_inputs=2, promotion_methods=[(0, 1, "DEFAULT")])
+    code = IndentedBuffer()
+    ModuleGenerator(schema, scalar_add, 2, "kernel", "wrapper", config).codegen(code)
+    source = code.getvalue()
+    stride_type = "int" if enabled else "tl.constexpr"
+    for name in ("in0", "in1", "out0"):
+        for dim in range(2):
+            assert f"{name}_stride{dim}: {stride_type}" in source
+    if not enabled:
+        assert "@trident.jit" not in source
+        assert "def wrapper_launch(" not in source
+    elif use_block_pointer:
+        outer, inner = source.split("@trident.jit", 1)
+        assert "stride_order(" in outer
+        assert "heuristics_for_tile_size(" in outer
+        assert "stride_order(" not in inner
+        assert "heuristics_for_tile_size(" not in inner
+        assert "shape = out0.shape" in inner
+        assert "in0_strides = in0.stride()" in inner
+        decorator = "@trident.jit\n" if dynamic else "@trident.jit(dynamic=False)"
+        assert decorator in source
+
+
 def test_function_schema_with_non_tensor_input():
     schema = FunctionSchema(
         is_tensor=[True, False, True],

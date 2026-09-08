@@ -329,10 +329,14 @@ class KernelGenerator:
             # signature: strides, for each tensor arguments
             ndim = self.ndim
             if ndim > 0:
+                # Only captured wrappers need runtime strides for symbolic shapes.
+                stride_type = (
+                    "int" if self.config.enable_trident_jit else "tl.constexpr"
+                )
                 # strides for inputs
                 for i in range(schema.num_input_tensors()):
                     stride_args = _cs(
-                        f"in{i}_stride{j}: tl.constexpr" for j in range(ndim)
+                        f"in{i}_stride{j}: {stride_type}" for j in range(ndim)
                     )
                     code.writeline(f"{stride_args}, # strides for in{i}")
                     if with_block_pointer:
@@ -344,7 +348,7 @@ class KernelGenerator:
                 # strides for outputs
                 for i in range(schema.num_output_tensors()):
                     stride_args = _cs(
-                        f"out{i}_stride{j}: tl.constexpr" for j in range(ndim)
+                        f"out{i}_stride{j}: {stride_type}" for j in range(ndim)
                     )
                     code.writeline(f"{stride_args}, # strides for out{i}")
                     if with_block_pointer:
@@ -551,7 +555,7 @@ class KernelGenerator:
             )
 
     def gen_body_gsl_with_bptr(self, code):
-        code.writeline("num_ctas = ext.num_programs(0)")
+        code.writeline("num_ctas = num_programs(0)")
         code.writeline("for j in range(0, tiles_per_cta):")
         with code.indent():
             code.writeline("tile_id = pid + j * num_ctas")
@@ -627,7 +631,7 @@ class KernelGenerator:
             )
 
     def gen_body_gsl_without_bptr(self, code):
-        code.writeline("num_ctas = ext.num_programs(0)")
+        code.writeline("num_ctas = num_programs(0)")
         code.writeline("for j in range(0, tiles_per_cta):")
         with code.indent():
             code.writeline("tile_id = pid + j * num_ctas")
@@ -646,7 +650,7 @@ class KernelGenerator:
             return code
 
         with code.indent():
-            code.writeline("pid = ext.program_id(0)")
+            code.writeline("pid = program_id(0)")
             self.gen_num_tiles(code)
             # monolitic kernel: one_tile_per_cta, it may requires a very large grid to compute
             code.writeline("if one_tile_per_cta: # monolitic kernel style")
@@ -672,7 +676,7 @@ class KernelGenerator:
             return code
 
         with code.indent():
-            code.writeline("pid = ext.program_id(0)")
+            code.writeline("pid = program_id(0)")
             self.gen_num_tiles(code)
             # monolitic kernel: one_tile_per_cta, it may requires a very large grid to compute
             code.writeline("if one_tile_per_cta: # monolitic kernel style")
@@ -746,7 +750,7 @@ class KernelGenerator:
             )
 
     def gen_body_gsl_1d_tile(self, code):
-        code.writeline("num_ctas = ext.num_programs(0)")
+        code.writeline("num_ctas = num_programs(0)")
         code.writeline("for j in range(0, tiles_per_cta):")
         with code.indent():
             code.writeline("tile_id = pid + j * num_ctas")
@@ -765,7 +769,7 @@ class KernelGenerator:
             return code
 
         with code.indent():
-            code.writeline("pid = ext.program_id(0)")
+            code.writeline("pid = program_id(0)")
             # code.writeline("num_ctas = te.num_programs(0)")
             # monolitic kernel: one_tile_per_cta, it may requires a very large grid to compute
             code.writeline("if one_tile_per_cta: # monolitic kernel style")
@@ -804,7 +808,19 @@ class WrapperGenerator:
     def output_name(self, i):
         return f"out{i}"
 
-    def gen_signature(self, code: IndentedBuffer):
+    def gen_trident_decorator(self, code: IndentedBuffer):
+        decorator = "@trident.jit"
+        if not self.config.trident_dynamic:
+            decorator += "(dynamic=False)"
+        code.writeline(decorator)
+
+    def gen_signature(
+        self,
+        code: IndentedBuffer,
+        *,
+        name: Optional[str] = None,
+        include_launch_metadata: bool = False,
+    ):
         # TODO: check if triton handles constexprs transitively
         schema = self.fx
         params: List[str] = []
@@ -840,7 +856,59 @@ class WrapperGenerator:
 
         for i in range(schema.num_output_tensors()):
             params.append(f"{self.output_name(i)}: Union[torch.Tensor, StridedBuffer]")
-        code.writeline(f"def {self.name}({_cs(params)}): ")
+        if include_launch_metadata:
+            for kind, count in (
+                ("in", schema.num_input_tensors()),
+                ("out", schema.num_output_tensors()),
+            ):
+                for i in range(count):
+                    params.extend(
+                        f"{kind}{i}_stride_order{j}: int" for j in range(self.ndim)
+                    )
+            params.extend(f"tile_size{j}: int" for j in range(self.ndim))
+        code.writeline(f"def {name or self.name}({_cs(params)}): ")
+
+    def gen_launch_metadata_wrapper(self, code: IndentedBuffer, inner_name: str):
+        """Prepare concrete launch metadata outside the captured graph."""
+        self.gen_signature(code)
+        with code.indent():
+            schema = self.fx
+            self.gen_docstring(code)
+            self.gen_same_shape_check(code)
+            code.writeline("shape = out0.shape")
+            code.writeline("if out0.numel() == 0:")
+            with code.indent():
+                self.gen_return(code)
+            self.gen_tile_sizes(code)
+            for kind, count in (
+                ("in", schema.num_input_tensors()),
+                ("out", schema.num_output_tensors()),
+            ):
+                for i in range(count):
+                    code.writeline(f"{kind}{i}_strides = {kind}{i}.stride()")
+                    code.writeline(
+                        f"{kind}{i}_stride_order = stride_order({kind}{i}_strides)"
+                    )
+
+            positional = [self.input_name(i) for i in range(schema.num_inputs())]
+            code.writeline(f"return {inner_name}({_cs(positional)},")
+            with code.indent():
+                for i in range(schema.num_output_tensors()):
+                    code.writeline(f"out{i}=out{i},")
+                for kind, count in (
+                    ("in", schema.num_input_tensors()),
+                    ("out", schema.num_output_tensors()),
+                ):
+                    for i in range(count):
+                        for j in range(self.ndim):
+                            code.writeline(
+                                f"{kind}{i}_stride_order{j}="
+                                f"{kind}{i}_stride_order[{j}],"
+                            )
+                for j in range(self.ndim):
+                    code.writeline(f"tile_size{j}=tile_sizes[{j}],")
+            code.writeline(")")
+        code.newline()
 
     def gen_docstring(self, code: IndentedBuffer):
         schema = self.fx
@@ -855,6 +923,19 @@ class WrapperGenerator:
         check: str = " == ".join(params)
         code.writeline(f"assert {check}, 'operand shapes mismatch'")
 
+    def gen_tile_sizes(self, code: IndentedBuffer):
+        """Select compile-time tile sizes from the concrete outer shape."""
+        max_tile_size = self.config.max_tile_size
+        if _tensor_inputs_all_complex(self.fx):
+            max_tile_size = max_tile_size // 2
+        major, _ = get_device_capability()
+        if self.name.find("fill_scalar") != -1 and major >= 9:
+            code.writeline("tile_sizes = tuple([64])")
+        else:
+            code.writeline(
+                f"tile_sizes = heuristics_for_tile_size({max_tile_size}, *shape)"
+            )
+
     def gen_task_partition(self, code: IndentedBuffer):
         code.writeline("# task partitioning")
         ndim = self.ndim
@@ -867,21 +948,13 @@ class WrapperGenerator:
             code.writeline("if num_tasks == 0:")
             with code.indent():
                 self.gen_return(code)
-            max_tile_size = self.config.max_tile_size
-            if _tensor_inputs_all_complex(self.fx):
-                max_tile_size = max_tile_size // 2
-            major, _ = get_device_capability()
-            if self.name.find("fill_scalar") != -1 and major >= 9:
-                code.writeline("tile_sizes = tuple([64])")
-            else:
-                code.writeline(
-                    f"tile_sizes = heuristics_for_tile_size({max_tile_size}, *shape)"
-                )
+            self.gen_tile_sizes(code)
             code.writeline("tile_size = math.prod(tile_sizes)")
             code.writeline(
                 "num_tiles = math.prod([triton.cdiv(size, tile_size) for size, tile_size in zip(shape, tile_sizes)])"
             )
 
+            major, _ = get_device_capability()
             if self.name.find("fill_scalar") != -1 and major >= 9:
                 code.writeline("num_ctas = num_tiles")
             else:
@@ -891,6 +964,32 @@ class WrapperGenerator:
             code.writeline("tiles_per_cta = triton.cdiv(num_tiles, num_ctas)")
             code.writeline("num_warps = heuristics_for_num_warps(tile_size)")
             code.writeline("one_tile_per_cta = tiles_per_cta==1")
+        code.writeline("grid = (num_ctas, 1, 1)")
+
+    def gen_dynamic_task_partition(self, code: IndentedBuffer):
+        """Derive exact launch sizes inside Trident from symbolic tensor shapes."""
+        code.writeline("# dynamic task partitioning")
+        code.writeline("shape = out0.shape")
+        code.writeline("num_tasks = out0.numel()")
+        code.writeline("if num_tasks == 0:")
+        with code.indent():
+            self.gen_return(code)
+        tile_sizes = _cs(f"tile_size{i}" for i in range(self.ndim))
+        code.writeline(f"tile_sizes = ({tile_sizes},)")
+        code.writeline("tile_size = math.prod(tile_sizes)")
+        code.writeline(
+            "num_tiles = math.prod([triton.cdiv(size, tile_size) "
+            "for size, tile_size in zip(shape, tile_sizes)])"
+        )
+        major, _ = get_device_capability()
+        if self.name.find("fill_scalar") != -1 and major >= 9:
+            code.writeline("num_ctas = num_tiles")
+        else:
+            max_grid_size0 = self.config.max_grid_size[0]
+            code.writeline(f"num_ctas = min({max_grid_size0}, num_tiles)")
+        code.writeline("tiles_per_cta = triton.cdiv(num_tiles, num_ctas)")
+        code.writeline("num_warps = heuristics_for_num_warps(tile_size)")
+        code.writeline("one_tile_per_cta = tiles_per_cta == 1")
         code.writeline("grid = (num_ctas, 1, 1)")
 
     def gen_task_partition_1d(self, code: IndentedBuffer):
@@ -933,6 +1032,8 @@ class WrapperGenerator:
     def gen_kernel_launch(
         self,
         code: IndentedBuffer,
+        *,
+        precomputed_launch_metadata: bool = False,
     ):
         schema = self.fx
         ndim = self.ndim
@@ -942,15 +1043,15 @@ class WrapperGenerator:
         code.writeline("# kernel launch")
         for i in range(schema.num_input_tensors()):
             code.writeline(f"in{i}_strides = in{i}.stride()")
-            if not with_block_pointer:
+            if not with_block_pointer or precomputed_launch_metadata:
                 continue
-            if ndim >= 2:  # where ndim is 1, we don't need to compute stride order
+            if ndim >= 2:
                 code.writeline(f"in{i}_stride_order = stride_order(in{i}_strides)")
             else:
                 code.writeline(f"in{i}_stride_order = (0,)")
         for i in range(schema.num_output_tensors()):
             code.writeline(f"out{i}_strides = out{i}.stride()")
-            if not with_block_pointer:
+            if not with_block_pointer or precomputed_launch_metadata:
                 continue
             if ndim >= 2:
                 code.writeline(f"out{i}_stride_order = stride_order(out{i}_strides)")
@@ -980,7 +1081,12 @@ class WrapperGenerator:
                         if not with_block_pointer:
                             continue
                         order = ", ".join(
-                            f"in{i}_stride_order[{j}]" for j in range(ndim)
+                            (
+                                f"in{i}_stride_order{j}"
+                                if precomputed_launch_metadata
+                                else f"in{i}_stride_order[{j}]"
+                            )
+                            for j in range(ndim)
                         )
                         code.writeline(f"{order}, # stride order for in{i}")
 
@@ -990,7 +1096,12 @@ class WrapperGenerator:
                         if not with_block_pointer:
                             continue
                         order = ", ".join(
-                            f"out{i}_stride_order[{j}]" for j in range(ndim)
+                            (
+                                f"out{i}_stride_order{j}"
+                                if precomputed_launch_metadata
+                                else f"out{i}_stride_order[{j}]"
+                            )
+                            for j in range(ndim)
                         )
                         code.writeline(f"{order}, # stride orderfor out{i}")
 
@@ -999,7 +1110,12 @@ class WrapperGenerator:
                     code.writeline("num_tasks, # num tasks")
                     code.writeline("tiles_per_cta=tiles_per_cta, # tiles_per_cta")
                     for i in range(ndim):
-                        code.writeline(f"tile_size{i}=tile_sizes[{i}],")
+                        value = (
+                            f"tile_size{i}"
+                            if precomputed_launch_metadata
+                            else f"tile_sizes[{i}]"
+                        )
+                        code.writeline(f"tile_size{i}={value},")
                     code.writeline("one_tile_per_cta=one_tile_per_cta,")
                 code.writeline("num_warps=num_warps,")
             code.writeline(")")
@@ -1055,28 +1171,38 @@ class WrapperGenerator:
         code.writeline(f"return {return_exprs}")
 
     def codegen_nd_tile(self, code):
-        if self.config.enable_trident_jit:
-            decorator = "@trident.jit"
-            if not self.config.trident_dynamic:
-                decorator += "(dynamic=False)"
-            code.writeline(decorator)
-        self.gen_signature(code)
+        split_stride_order = (
+            self.config.enable_trident_jit
+            and self.config.prefer_block_pointer
+            and self.ndim >= 1
+        )
+        if split_stride_order:
+            inner_name = f"{self.name}_launch"
+            self.gen_launch_metadata_wrapper(code, inner_name)
+            self.gen_trident_decorator(code)
+            self.gen_signature(code, name=inner_name, include_launch_metadata=True)
+        else:
+            if self.config.enable_trident_jit:
+                self.gen_trident_decorator(code)
+            self.gen_signature(code)
 
         with code.indent():
-            self.gen_docstring(code)
-            self.gen_same_shape_check(code)
-            self.gen_task_partition(code)
-            self.gen_kernel_launch(code)
+            if split_stride_order:
+                self.gen_docstring(code)
+                self.gen_same_shape_check(code)
+                self.gen_dynamic_task_partition(code)
+            else:
+                self.gen_docstring(code)
+                self.gen_same_shape_check(code)
+                self.gen_task_partition(code)
+            self.gen_kernel_launch(code, precomputed_launch_metadata=split_stride_order)
             self.gen_return(code)
         code.newline()
         return code
 
     def codegen_1d_tile(self, code):
         if self.config.enable_trident_jit:
-            decorator = "@trident.jit"
-            if not self.config.trident_dynamic:
-                decorator += "(dynamic=False)"
-            code.writeline(decorator)
+            self.gen_trident_decorator(code)
         self.gen_signature(code)
 
         with code.indent():
@@ -1204,7 +1330,10 @@ class ModuleGenerator:
         code.writeline("from flag_gems.utils.tensor_wrapper import StridedBuffer")
         if not self.config.enable_trident_jit:
             code.writeline("from flag_gems.utils.libentry import libentry")
-        code.writeline("from flag_gems.utils import triton_lang_extension as ext")
+        code.writeline(
+            "from flag_gems.utils.triton_lang_extension import "
+            "num_programs, program_id"
+        )
         code.writeline("from flag_gems.runtime import torch_device_fn")
 
         if self.config.enable_trident_jit:
