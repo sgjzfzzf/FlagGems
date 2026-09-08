@@ -858,7 +858,6 @@ class WrapperGenerator:
                         f"{kind}{i}_stride_order{j}: int" for j in range(self.ndim)
                     )
             params.extend(f"tile_size{j}: int" for j in range(self.ndim))
-            params.extend(["one_tile_per_cta: bool", "num_warps: int"])
         code.writeline(f"def {name or self.name}({_cs(params)}): ")
 
     def gen_launch_metadata_wrapper(self, code: IndentedBuffer, inner_name: str):
@@ -868,7 +867,11 @@ class WrapperGenerator:
             schema = self.fx
             self.gen_docstring(code)
             self.gen_same_shape_check(code)
-            self.gen_task_partition(code)
+            code.writeline("shape = out0.shape")
+            code.writeline("if out0.numel() == 0:")
+            with code.indent():
+                self.gen_return(code)
+            self.gen_tile_sizes(code)
             for kind, count in (
                 ("in", schema.num_input_tensors()),
                 ("out", schema.num_output_tensors()),
@@ -896,8 +899,6 @@ class WrapperGenerator:
                             )
                 for j in range(self.ndim):
                     code.writeline(f"tile_size{j}=tile_sizes[{j}],")
-                code.writeline("one_tile_per_cta=one_tile_per_cta,")
-                code.writeline("num_warps=num_warps,")
             code.writeline(")")
         code.newline()
 
@@ -914,6 +915,19 @@ class WrapperGenerator:
         check: str = " == ".join(params)
         code.writeline(f"assert {check}, 'operand shapes mismatch'")
 
+    def gen_tile_sizes(self, code: IndentedBuffer):
+        """Select compile-time tile sizes from the concrete outer shape."""
+        max_tile_size = self.config.max_tile_size
+        if _tensor_inputs_all_complex(self.fx):
+            max_tile_size = max_tile_size // 2
+        major, _ = get_device_capability()
+        if self.name.find("fill_scalar") != -1 and major >= 9:
+            code.writeline("tile_sizes = tuple([64])")
+        else:
+            code.writeline(
+                f"tile_sizes = heuristics_for_tile_size({max_tile_size}, *shape)"
+            )
+
     def gen_task_partition(self, code: IndentedBuffer):
         code.writeline("# task partitioning")
         ndim = self.ndim
@@ -926,21 +940,13 @@ class WrapperGenerator:
             code.writeline("if num_tasks == 0:")
             with code.indent():
                 self.gen_return(code)
-            max_tile_size = self.config.max_tile_size
-            if _tensor_inputs_all_complex(self.fx):
-                max_tile_size = max_tile_size // 2
-            major, _ = get_device_capability()
-            if self.name.find("fill_scalar") != -1 and major >= 9:
-                code.writeline("tile_sizes = tuple([64])")
-            else:
-                code.writeline(
-                    f"tile_sizes = heuristics_for_tile_size({max_tile_size}, *shape)"
-                )
+            self.gen_tile_sizes(code)
             code.writeline("tile_size = math.prod(tile_sizes)")
             code.writeline(
                 "num_tiles = math.prod([triton.cdiv(size, tile_size) for size, tile_size in zip(shape, tile_sizes)])"
             )
 
+            major, _ = get_device_capability()
             if self.name.find("fill_scalar") != -1 and major >= 9:
                 code.writeline("num_ctas = num_tiles")
             else:
@@ -962,6 +968,7 @@ class WrapperGenerator:
             self.gen_return(code)
         tile_sizes = _cs(f"tile_size{i}" for i in range(self.ndim))
         code.writeline(f"tile_sizes = ({tile_sizes},)")
+        code.writeline("tile_size = math.prod(tile_sizes)")
         code.writeline(
             "num_tiles = math.prod([triton.cdiv(size, tile_size) "
             "for size, tile_size in zip(shape, tile_sizes)])"
@@ -973,6 +980,8 @@ class WrapperGenerator:
             max_grid_size0 = self.config.max_grid_size[0]
             code.writeline(f"num_ctas = min({max_grid_size0}, num_tiles)")
         code.writeline("tiles_per_cta = triton.cdiv(num_tiles, num_ctas)")
+        code.writeline("num_warps = heuristics_for_num_warps(tile_size)")
+        code.writeline("one_tile_per_cta = tiles_per_cta == 1")
         code.writeline("grid = (num_ctas, 1, 1)")
 
     def gen_task_partition_1d(self, code: IndentedBuffer):
