@@ -34,6 +34,44 @@ Available modes are `torch`, `gems`, `torch_compile`,
 `torch_compile_cpp_wrapper`, and `trident`. Available datasets are `mmlu`,
 `humaneval`, and `gsm8k`; `smoke` uses built-in prompts.
 
+The `trident` mode means **FlagGems + Trident**: public Torch operators are
+first dispatched to the selected FlagGems implementations, whose wrappers are
+then captured with Trident.
+
+## Full Matrix
+
+`run_full_matrix_worker.sh` runs assigned `DATASET:MODE` jobs serially on one
+GPU. Multiple workers can cover the full matrix in parallel. The following
+example uses four GPUs and covers all three datasets and all five modes:
+
+```bash
+export RESULT_ROOT=/path/to/results
+export MODEL_PATH=/path/to/DeepSeek-V2-Lite
+export DATASET_CACHE=/path/to/dataset-cache
+export PYTHON=python
+
+benchmark/models_benchmark/trident/run_full_matrix_worker.sh 0 \
+  mmlu:torch mmlu:trident &
+benchmark/models_benchmark/trident/run_full_matrix_worker.sh 1 \
+  mmlu:gems gsm8k:torch gsm8k:gems humaneval:torch humaneval:gems &
+benchmark/models_benchmark/trident/run_full_matrix_worker.sh 2 \
+  mmlu:torch_compile gsm8k:torch_compile gsm8k:trident \
+  humaneval:torch_compile humaneval:trident &
+benchmark/models_benchmark/trident/run_full_matrix_worker.sh 3 \
+  mmlu:torch_compile_cpp_wrapper gsm8k:torch_compile_cpp_wrapper \
+  humaneval:torch_compile_cpp_wrapper &
+wait
+```
+
+Each job has an independent FlagGems, Triton, and Inductor cache. Completed
+jobs are skipped when the worker is restarted. Generate `STATUS.md` and, once
+all jobs are terminal, `SUMMARY.md` with:
+
+```bash
+python benchmark/models_benchmark/trident/summarize_full_matrix.py \
+  --root "$RESULT_ROOT" --watch
+```
+
 ## C++ Wrapper Issue and Fix
 
 ### Symptoms
