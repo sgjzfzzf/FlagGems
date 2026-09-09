@@ -42,7 +42,9 @@ then captured with Trident.
 
 `run_full_matrix_worker.sh` runs assigned `DATASET:MODE` jobs serially on one
 GPU. Multiple workers can cover the full matrix in parallel. The following
-example uses four GPUs and covers all three datasets and all five modes:
+example uses four GPUs and covers all three datasets and all four FlagGems
+modes. Torch eager remains available as an optional single-mode baseline, but
+is not part of this matrix:
 
 ```bash
 export RESULT_ROOT=/path/to/results
@@ -51,9 +53,9 @@ export DATASET_CACHE=/path/to/dataset-cache
 export PYTHON=python
 
 benchmark/models_benchmark/trident/run_full_matrix_worker.sh 0 \
-  mmlu:torch mmlu:trident &
+  mmlu:trident &
 benchmark/models_benchmark/trident/run_full_matrix_worker.sh 1 \
-  mmlu:gems gsm8k:torch gsm8k:gems humaneval:torch humaneval:gems &
+  mmlu:gems gsm8k:gems humaneval:gems &
 benchmark/models_benchmark/trident/run_full_matrix_worker.sh 2 \
   mmlu:torch_compile gsm8k:torch_compile gsm8k:trident \
   humaneval:torch_compile humaneval:trident &

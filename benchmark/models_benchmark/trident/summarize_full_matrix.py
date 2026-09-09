@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 
 TASKS = ("mmlu", "gsm8k", "humaneval")
-MODES = ("torch", "gems", "torch_compile", "torch_compile_cpp_wrapper", "trident")
+MODES = ("gems", "torch_compile", "torch_compile_cpp_wrapper", "trident")
 MODE_LABELS = {
     "torch": "Torch eager",
     "gems": "Gems",
@@ -141,9 +141,10 @@ def main():
     while True:
         rows = collect(args.root)
         write_status(args.root, rows)
+        total = len(TASKS) * len(MODES)
         terminal = sum(row["status"].startswith(("PASS", "FAIL")) for row in rows)
-        print(f"terminal={terminal}/15", flush=True)
-        if terminal == 15:
+        print(f"terminal={terminal}/{total}", flush=True)
+        if terminal == total:
             write_summary(args.root, rows)
             return
         if not args.watch:
