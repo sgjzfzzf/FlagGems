@@ -50,7 +50,6 @@ def test_accuracy_argsort(batch_size, hiddensize, descending, dtype, dim):
     ref_y = utils.to_reference(y)
     ref_index = torch.argsort(ref_y, dim=dim, stable=True, descending=descending)
 
-    with flag_gems.use_gems():
-        res_index = torch.argsort(y, dim=dim, stable=True, descending=descending)
+    res_index = flag_gems.ops.argsort(y, dim=dim, descending=descending)
 
     utils.gems_assert_equal(res_index, ref_index)

@@ -20,7 +20,6 @@ import triton
 import triton.language as tl
 
 from flag_gems import runtime
-from flag_gems.utils import dim_compress
 from flag_gems.utils import triton_lang_extension as ext
 
 logger = logging.getLogger(__name__)
@@ -52,7 +51,7 @@ def index_select_kernel(
     tl.store(out + out_off, selected, mask=final_mask)
 
 
-@trident.jit(dynamic=False)
+@trident.jit
 def index_select(inp, dim, index):
     logger.debug("GEMS INDEX SELECT")
     assert dim >= -inp.ndim and dim < inp.ndim, "Invalid dim"
@@ -64,8 +63,8 @@ def index_select(inp, dim, index):
     inp_shape = list(inp.shape)
     index_len = index.numel()
 
-    # with dim_compress
-    inp = dim_compress(inp, dim)
+    order = [i for i in range(inp.ndim) if i != dim] + [dim]
+    inp = inp.permute(order).contiguous()
     N = inp_shape[dim]
     M = inp.numel() // N
     out_shape = list(inp.shape)
