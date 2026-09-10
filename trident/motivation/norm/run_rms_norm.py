@@ -28,9 +28,14 @@ _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
-from rms_norm_trident import rms_norm_compile_entry, rms_norm_jit  # noqa: E402
+from rms_norm_trident import (  # noqa: E402
+    rms_norm_compile_entry,
+    rms_norm_jit,
+    rms_norm_triton,
+)
 
 MODES = (
+    "triton",
     "torch_compile",
     "torch_compile_cudagraph",
     "torch_compile_guard",
@@ -43,9 +48,15 @@ MODES = (
 )
 
 
+_ORIG_CPP_WRAPPER_CONFIG = None
+
+
 def allow_cpp_wrapper_cudagraph() -> None:
+    global _ORIG_CPP_WRAPPER_CONFIG
     compile_fx = importlib.import_module("torch._inductor.compile_fx")
-    original = compile_fx.get_cpp_wrapper_config
+    if _ORIG_CPP_WRAPPER_CONFIG is None:
+        _ORIG_CPP_WRAPPER_CONFIG = compile_fx.get_cpp_wrapper_config
+    original = _ORIG_CPP_WRAPPER_CONFIG
 
     def config():
         with torch._inductor.config.patch("triton.cudagraphs", False):
@@ -55,6 +66,15 @@ def allow_cpp_wrapper_cudagraph() -> None:
         return overrides
 
     compile_fx.get_cpp_wrapper_config = config
+
+
+def restore_cpp_wrapper_config() -> None:
+    """Undo allow_cpp_wrapper_cudagraph monkeypatch (call between modes)."""
+    global _ORIG_CPP_WRAPPER_CONFIG
+    if _ORIG_CPP_WRAPPER_CONFIG is None:
+        return
+    compile_fx = importlib.import_module("torch._inductor.compile_fx")
+    compile_fx.get_cpp_wrapper_config = _ORIG_CPP_WRAPPER_CONFIG
 
 
 def patch_cudagraph_triton_meta() -> None:
@@ -83,6 +103,8 @@ def patch_cudagraph_triton_meta() -> None:
 
 
 def build(mode: str):
+    if mode == "triton":
+        return rms_norm_triton
     if mode == "trident":
         return rms_norm_jit
     options = {}

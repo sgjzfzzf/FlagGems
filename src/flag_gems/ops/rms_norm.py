@@ -12,14 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""RMSNorm with a Trident-capturable forward host (same role as ``absolute``).
+
+Forward kernels use contiguous ``pid * N + col`` addressing so ``@trident.jit``
+can capture the host without stride-literal / autotune issues. Backward keeps
+the existing libentry kernels.
+"""
+
+from __future__ import annotations
+
 import logging
-import math
 
 import torch
+import trident
 import triton
 import triton.language as tl
 
-from flag_gems import runtime
 from flag_gems.runtime import torch_device_fn
 from flag_gems.utils import libentry
 from flag_gems.utils import triton_lang_extension as ext
@@ -32,21 +40,17 @@ def prev_multiple_of(a, b):
     return tl.cdiv(a, b) * b - b
 
 
-@libentry()
-@triton.jit(do_not_specialize=["eps"])
+@triton.jit
 def rms_norm_kernel(
-    out_ptr,  # pointer to the output
-    INV_RMS,  # pointer to inverse rms
-    in_ptr,  # pointer to the input
-    w_ptr,  # pointer to the weights
-    y_stride_r,
-    y_stride_c,
-    x_stride_r,  # how much to increase the pointer when moving by 1 row
-    x_stride_c,  # how much to increase the pointer when moving by 1 col
-    N,  # number of columns in X
-    eps,  # epsilon to avoid division by zero
+    out_ptr,
+    INV_RMS,
+    in_ptr,
+    w_ptr,
+    N,
+    eps,
     BLOCK_SIZE: tl.constexpr,
 ):
+    """Contiguous one-shot path (``N <= 4096``)."""
     if tl.constexpr(in_ptr.dtype.element_ty == tl.float16) or tl.constexpr(
         in_ptr.dtype.element_ty == tl.bfloat16
     ):
@@ -55,31 +59,22 @@ def rms_norm_kernel(
         cdtype = in_ptr.dtype.element_ty
 
     pid = tl.program_id(0)
-    out_ptr += pid * y_stride_r
-    in_ptr += pid * x_stride_r
-
     mask = tl.arange(0, BLOCK_SIZE) < N
     cols = tl.arange(0, BLOCK_SIZE)
-    x = tl.load(in_ptr + cols * x_stride_c, mask, other=0.0).to(cdtype)
+    x = tl.load(in_ptr + pid * N + cols, mask, other=0.0).to(cdtype)
 
     var = tl.sum(x * x, axis=0) / N
     rrms = 1 / tl.sqrt(var + eps)
 
-    w = tl.load(w_ptr + tl.arange(0, BLOCK_SIZE), mask=mask, other=0.0)
-    # Cast x_normed back to input dtype before multiplying with weight
-    # to align with vLLM native: x.to(weight.dtype) * weight
+    w = tl.load(w_ptr + cols, mask=mask, other=0.0)
+    # Align with vLLM native: x.to(weight.dtype) * weight
     x_normed = (x * rrms).to(in_ptr.dtype.element_ty)
     y = x_normed * w
-    tl.store(out_ptr + cols * y_stride_c, y, mask=mask)
+    tl.store(out_ptr + pid * N + cols, y, mask=mask)
     tl.store(INV_RMS + pid, rrms)
 
 
-@libentry()
-@triton.autotune(
-    configs=runtime.get_tuned_config("rms_norm_loop"),
-    key=["N"],
-)
-@triton.jit(do_not_specialize=["eps"])
+@triton.jit
 def rms_norm_loop_kernel(
     out_ptr,
     INV_RMS,
@@ -89,6 +84,7 @@ def rms_norm_loop_kernel(
     eps,
     TILE_N: tl.constexpr,
 ):
+    """Contiguous tiled path (``N > 4096``); fixed TILE_N (no autotune)."""
     if tl.constexpr(in_ptr.dtype.element_ty == tl.float16) or tl.constexpr(
         in_ptr.dtype.element_ty == tl.bfloat16
     ):
@@ -96,9 +92,8 @@ def rms_norm_loop_kernel(
     else:
         cdtype = in_ptr.dtype.element_ty
 
-    pid = ext.program_id(0)
+    pid = tl.program_id(0)
 
-    # Pass 1: compute sum(x^2) in chunks
     acc = tl.zeros((TILE_N,), dtype=tl.float32)
     num_steps = tl.cdiv(N, TILE_N)
 
@@ -108,7 +103,6 @@ def rms_norm_loop_kernel(
         x = tl.load(in_ptr + pid * N + n_offsets).to(tl.float32)
         acc += x * x
 
-    # last step with mask
     start_n = (num_steps - 1) * TILE_N
     n_offsets = start_n + tl.arange(0, TILE_N)
     mask = n_offsets < N
@@ -119,10 +113,8 @@ def rms_norm_loop_kernel(
     rrms = 1 / tl.sqrt(var + eps)
     tl.store(INV_RMS + pid, rrms)
 
-    # Pass 2: normalize in reverse order (better L2 cache reuse)
     prev_multiple = prev_multiple_of(N, TILE_N)
 
-    # first reverse step with mask
     for start_n in range(0, TILE_N, TILE_N):
         n_offsets = (prev_multiple - start_n) + tl.arange(0, TILE_N)
         mask = n_offsets < N
@@ -133,7 +125,6 @@ def rms_norm_loop_kernel(
             eviction_policy="evict_first",
         ).to(cdtype)
         w = tl.load(w_ptr + n_offsets, mask=mask, other=0.0)
-        # Cast x_normed back to input dtype before multiplying with weight
         x_normed = (x * rrms).to(in_ptr.dtype.element_ty)
         y = x_normed * w
         tl.store(out_ptr + pid * N + n_offsets, y, mask=mask)
@@ -145,26 +136,50 @@ def rms_norm_loop_kernel(
             eviction_policy="evict_first",
         ).to(cdtype)
         w = tl.load(w_ptr + n_offsets)
-        # Cast x_normed back to input dtype before multiplying with weight
         x_normed = (x * rrms).to(in_ptr.dtype.element_ty)
         y = x_normed * w
         tl.store(out_ptr + pid * N + n_offsets, y)
 
 
+def _tile_n_loop(N: int) -> int:
+    if N <= 1024:
+        return 1024
+    if N <= 2048:
+        return 2048
+    if N <= 4096:
+        return 4096
+    return 8192
+
+
+def _num_warps_loop(TILE_N: int) -> int:
+    if TILE_N < 2048:
+        return 4
+    if TILE_N < 4096:
+        return 8
+    return 16
+
+
+def _prod_shape(shape) -> int:
+    out = 1
+    for s in shape:
+        out *= int(s)
+    return out
+
+
 @libentry()
 @triton.jit(do_not_specialize=["eps"])
 def rms_norm_grad_dx_loop_kernel(
-    X,  # pointer to the input
+    X,
     DY,
-    INV_RMS,  # pointer to inverse rms
-    DX,  # pointer to the output
-    W,  # pointer to the weights
+    INV_RMS,
+    DX,
+    W,
     dx_stride_r,
     dx_stride_c,
-    x_stride_r,  # how much to increase the pointer when moving by 1 row
-    x_stride_c,  # how much to increase the pointer when moving by 1 col
-    N,  # number of columns in X
-    eps,  # epsilon to avoid division by zero
+    x_stride_r,
+    x_stride_c,
+    N,
+    eps,
     BLOCK_SIZE: tl.constexpr,
 ):
     pid = ext.program_id(0)
@@ -175,7 +190,6 @@ def rms_norm_grad_dx_loop_kernel(
 
     inv_rms = tl.load(INV_RMS).to(tl.float32)
 
-    # First pass: compute row_sum_stats = sum(x * inv_rms * dy * w)
     row_sum_stats = tl.zeros([BLOCK_SIZE], dtype=tl.float32)
     for start_n in range(0, N, BLOCK_SIZE):
         cols = start_n + tl.arange(0, BLOCK_SIZE)
@@ -189,7 +203,6 @@ def rms_norm_grad_dx_loop_kernel(
 
     row_sum_stats_scalar = tl.sum(row_sum_stats, axis=0)
 
-    # Second pass: compute and store dx
     for start_n in range(0, N, BLOCK_SIZE):
         cols = start_n + tl.arange(0, BLOCK_SIZE)
         mask = cols < N
@@ -206,17 +219,17 @@ def rms_norm_grad_dx_loop_kernel(
 @libentry()
 @triton.jit(do_not_specialize=["eps"])
 def rms_norm_grad_dx_kernel(
-    X,  # pointer to the input
+    X,
     DY,
-    INV_RMS,  # pointer to inverse rms
-    DX,  # pointer to the output
-    W,  # pointer to the weights
+    INV_RMS,
+    DX,
+    W,
     dx_stride_r,
     dx_stride_c,
-    x_stride_r,  # how much to increase the pointer when moving by 1 row
-    x_stride_c,  # how much to increase the pointer when moving by 1 col
-    N,  # number of columns in X
-    eps,  # epsilon to avoid division by zero
+    x_stride_r,
+    x_stride_c,
+    N,
+    eps,
     BLOCK_SIZE: tl.constexpr,
 ):
     pid = ext.program_id(0)
@@ -246,16 +259,16 @@ def rms_norm_grad_dx_kernel(
 @libentry()
 @triton.jit
 def rms_norm_grad_dw_kernel(
-    X,  # pointer to the input
+    X,
     DY,
-    INV_RMS,  # pointer to inverse rms
-    DW,  # pointer to the output
+    INV_RMS,
+    DW,
     dx_stride_r,
     dx_stride_c,
-    x_stride_r,  # how much to increase the pointer when moving by 1 row
-    x_stride_c,  # how much to increase the pointer when moving by 1 col
-    M,  # number of rows in X
-    N,  # number of columns in X
+    x_stride_r,
+    x_stride_c,
+    M,
+    N,
     ROW_BLOCK_SIZE: tl.constexpr,
     COL_BLOCK_SIZE: tl.constexpr,
 ):
@@ -289,8 +302,6 @@ def rms_norm_grad_dw_kernel(
     ).to(tl.float32)
 
     d_weight = x * dy * inv_rms[:, None]
-    # Sum over rows (axis=0) - masked rows are 0 (from other=0.0 in load), so sum is correct
-    # The mask ensures invalid rows contribute 0 to the sum
     partial_dweight_sum = tl.sum(d_weight, axis=0)
 
     tl.store(
@@ -308,21 +319,44 @@ def rms_norm_out(result, x, normalized_shape, weight, eps=1e-5):
 
 def rms_norm_forward(x, normalized_shape, weight, eps=1e-5):
     logger.debug("GEMS RMS_NORM FORWARD")
+    N_meta = _prod_shape(normalized_shape)
+    assert weight.numel() == N_meta, (
+        f"rms_norm: weight numel {weight.numel()} != normalized_shape product {N_meta}"
+    )
     dim = x.ndim - len(normalized_shape)
-    M = math.prod(x.shape[:dim])
-    N = math.prod(normalized_shape)
+    assert _prod_shape(x.shape[dim:]) == N_meta, (
+        f"rms_norm: x trailing shape {tuple(x.shape[dim:])} != {normalized_shape}"
+    )
 
     x = x.contiguous()
     weight = weight.contiguous()
+    # Tensor-derived sizes keep Trident/Dynamo from baking bad Python constants.
+    N = weight.numel()
+    M = x.numel() // N
     y = torch.empty_like(x)
     inv_rms = torch.empty((M,), device=x.device, dtype=torch.float32)
 
     with torch_device_fn.device(x.device):
         if N <= 4096:
             BLOCK_SIZE = triton.next_power_of_2(N)
-            rms_norm_kernel[M,](y, inv_rms, x, weight, N, 1, N, 1, N, eps, BLOCK_SIZE)
+            grid = (M, 1, 1)
+            rms_norm_kernel[grid](
+                y, inv_rms, x, weight, N, eps, BLOCK_SIZE=BLOCK_SIZE
+            )
         else:
-            rms_norm_loop_kernel[M,](y, inv_rms, x, weight, N, eps)
+            TILE_N = _tile_n_loop(N)
+            num_warps = _num_warps_loop(TILE_N)
+            grid = (M, 1, 1)
+            rms_norm_loop_kernel[grid](
+                y,
+                inv_rms,
+                x,
+                weight,
+                N,
+                eps,
+                TILE_N=TILE_N,
+                num_warps=num_warps,
+            )
 
     return y, inv_rms
 
@@ -330,8 +364,8 @@ def rms_norm_forward(x, normalized_shape, weight, eps=1e-5):
 def rms_norm_backward(dy, x, inv_rms, normalized_shape, weight, eps=1e-5):
     logger.debug("GEMS RMS_NORM BACKWARD")
     dim = x.ndim - len(normalized_shape)
-    M = math.prod(x.shape[:dim])
-    N = math.prod(normalized_shape)
+    M = _prod_shape(x.shape[:dim])
+    N = _prod_shape(normalized_shape)
 
     x = x.contiguous()
     dy = dy.contiguous()
@@ -397,10 +431,18 @@ class RmsNorm(torch.autograd.Function):
         x, inv_rms, weight = ctx.saved_tensors
         normalized_shape = ctx.normalized_shape
         eps = ctx.eps
-
         dx, dw = rms_norm_backward(dy, x, inv_rms, normalized_shape, weight, eps)
         return dx, None, dw, None
 
 
+@trident.jit
+def rms_norm_jit(x, normalized_shape, weight, eps=1e-5):
+    """Trident-capturable forward (bench / static host); no autograd."""
+    logger.debug("GEMS RMS_NORM")
+    y, _ = rms_norm_forward(x, normalized_shape, weight, eps)
+    return y
+
+
 def rms_norm(x, normalized_shape, weight, eps=1e-5):
+    """Public API with autograd (unchanged for accuracy tests)."""
     return RmsNorm.apply(x, normalized_shape, weight, eps)

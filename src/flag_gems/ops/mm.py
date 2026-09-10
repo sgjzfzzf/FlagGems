@@ -573,6 +573,7 @@ def _mm_impl(a, b, c, M, N, K):
     return general_mm(a, b, c, M, N, K)
 
 
+@trident.jit
 def mm(a, b):
     logger.debug("GEMS MM")
 

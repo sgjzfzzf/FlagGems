@@ -809,6 +809,12 @@ class WrapperGenerator:
         return f"out{i}"
 
     def gen_trident_decorator(self, code: IndentedBuffer):
+        # Benchmark harness can override the wrapper decorator (e.g. @torch.compile(...))
+        # via FLAGGEMS_POINTWISE_WRAPPER while keeping the same generated body.
+        override = os.getenv("FLAGGEMS_POINTWISE_WRAPPER")
+        if override:
+            code.writeline(override)
+            return
         decorator = "@trident.jit"
         if not self.config.trident_dynamic:
             decorator += "(dynamic=False)"
@@ -1171,8 +1177,13 @@ class WrapperGenerator:
         code.writeline(f"return {return_exprs}")
 
     def codegen_nd_tile(self, code):
+        # Outer Python launch-metadata wrapper is only needed when the Trident
+        # graph is dynamic: stride_order inside the capture hits unsupported
+        # symbolic ops (e.g. rshift). For static trident (trident_dynamic=False),
+        # keep a single @trident.jit wrapper with no outer shell.
         split_stride_order = (
             self.config.enable_trident_jit
+            and self.config.trident_dynamic
             and self.config.prefer_block_pointer
             and self.ndim >= 1
         )

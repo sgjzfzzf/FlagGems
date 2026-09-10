@@ -22,6 +22,7 @@ _HERE = Path(__file__).resolve().parent
 _RUNNER = _HERE / "run_softmax.py"
 
 MODES = (
+    "triton",
     "torch_compile",
     "torch_compile_cudagraph",
     "torch_compile_guard",

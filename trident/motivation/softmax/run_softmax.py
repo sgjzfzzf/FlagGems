@@ -27,9 +27,14 @@ _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
-from softmax_trident import softmax_compile_entry, softmax_jit  # noqa: E402
+from softmax_trident import (  # noqa: E402
+    softmax_compile_entry,
+    softmax_jit,
+    softmax_triton,
+)
 
 MODES = (
+    "triton",
     "torch_compile",
     "torch_compile_cudagraph",
     "torch_compile_guard",
@@ -82,6 +87,8 @@ def patch_cudagraph_triton_meta() -> None:
 
 
 def build(mode: str):
+    if mode == "triton":
+        return softmax_triton
     if mode == "trident":
         return softmax_jit
     options = {}
