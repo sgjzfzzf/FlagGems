@@ -350,23 +350,29 @@ OPS = {
         "bench": "generic_2d",
         "bench_op": "cumsum",
         "torch_op": torch.cumsum,
+        # Call patched module fn directly: Aten registration still holds the
+        # import-time @trident.jit object, so torch.cumsum would ignore strip.
+        "call": "module_wrapper",
         "input_fn": "benchmark.test_cumsum:input_fn",
         "gems_include": ("cumsum",),
         "module": "cumsum",
         "wrapper": "cumsum",
         # Best probed single: mild trident win over gems+torch at host ~5us.
         "single_shape": (64, 4096),
+        # Keep N <= 16384 so reduce_then_scan_row uses the persistent 3-D
+        # grid path. N > 16384 launches a rank-4 grid that Dynamo/Trident
+        # reject ("Grid can have at most rank 3").
         "multi_shapes": [
-            (1, 32768),
-            (2, 32768),
-            (4, 32768),
-            (8, 32768),
-            (16, 32768),
-            (24, 32768),
-            (32, 32768),
-            (48, 32768),
-            (64, 32768),
-            (128, 32768),
+            (1, 4096),
+            (2, 4096),
+            (4, 4096),
+            (8, 4096),
+            (16, 4096),
+            (32, 4096),
+            (64, 4096),
+            (128, 4096),
+            (256, 4096),
+            (512, 4096),
         ],
     },
     "sort": {
