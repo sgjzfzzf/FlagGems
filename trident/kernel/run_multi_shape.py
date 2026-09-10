@@ -3,7 +3,8 @@
 
 Invoked by bench_multi_shape.py once per (round, op, mode). Prints one JSON line.
 
-Shapes: FlagGems bench pool, sorted by cost, capped at --n-shapes.
+Shapes: ordered application-shaped ``multi_shapes`` from harness.py, capped at
+--n-shapes. Shapes in one op stay in the same dispatch/algorithm family.
 Each round: --passes timed full passes over all selected shapes
 (no separate warmup; early visits ≈ cold — slice later).
 

@@ -3,6 +3,7 @@
 
 Invoked by bench_single_shape.py once per (round, op, mode). Prints one JSON line.
 
+Uses the explicit representative ``single_shape`` from harness.py.
 No separate warmup: every call is timed (early samples ≈ cold; slice later).
 
   host_us: sync → call returns
@@ -33,7 +34,7 @@ from harness import (  # noqa: E402
     OPS,
     apply_compile_runtime_flags,
     configure_pointwise,
-    load_smallest_inputs,
+    load_single_inputs,
     patch_direct,
     resolve_call_fn,
     set_trident_skip_result_normalize,
@@ -80,7 +81,7 @@ def main() -> None:
     os.environ["TORCHINDUCTOR_CACHE_DIR"] = str(inductor_cache)
 
     torch.manual_seed(0)
-    shape, dtype, op_args, op_kwargs, _torch_op = load_smallest_inputs(args.op)
+    shape, dtype, op_args, op_kwargs, _torch_op = load_single_inputs(args.op)
     apply_compile_runtime_flags(args.mode, n_shapes=1)
 
     kind = OPS[args.op]["kind"]

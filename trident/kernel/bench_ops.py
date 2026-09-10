@@ -7,8 +7,9 @@ Env policy (explicit, avoids parent-shell leakage):
 
 Defaults:
   - rounds=5 (both suites)
-  - single: repeats=30 timed calls on cheapest shape
-  - multi: each round = FORMAL_MULTI_PASSES full passes over ≤32 shapes;
+  - single: repeats=30 timed calls on the explicit representative shape
+  - multi: each round = FORMAL_MULTI_PASSES full passes over exactly
+    FORMAL_N_SHAPES explicit application-shaped dynamic-family shapes;
     no guard / cudagraph
 
 Example:
